@@ -1,10 +1,7 @@
 # A Bayesian Framework for Real-Time Estimation of Time-Varying Case Fatality Rates
 
 
-
-This repository contains the official Python implementation for the manuscript: "**A Bayesian Framework for Real-Time Estimation of Time-Varying Case Fatality Rates with Application to COVID-19 Policy Periods in Japan**".&#x20;
-
-
+This repository contains the official Python implementation for the manuscript: "**A Bayesian Framework for Real-Time Estimation of Time-Varying Case Fatality Rates with Application to COVID-19 Policy Periods in Japan**".
 
 Our work introduces the Bayesian real-time adjusted Case Fatality Rate (BrtaCFR) estimator, a method designed to provide robust, delay-adjusted, and time-varying estimates of disease severity. It uses only standard epidemiological surveillance data (daily case and death counts) and offers a complete solution for uncertainty quantification and data-driven smoothing, overcoming key limitations of previous frequentist approaches.
 
@@ -27,11 +24,7 @@ To set up the necessary environment to run the code, please follow these steps:
 1. **Clone the repository:**
 
    ```
-   git clone https://github.com/your-username/BrtaCFR.
-   ```
-
-   ```
-   git
+   git clone https://github.com/your-username/BrtaCFR.git
    cd BrtaCFR
    ```
 
@@ -42,7 +35,10 @@ To set up the necessary environment to run the code, please follow these steps:
    source venv/bin/activate  # On Windows, use `venv\Scripts\activate`
    ```
 
-3. **Install the required packages:**To run the six simulation scenarios (with 1000 replications each) and the full sensitivity analysis, execute the following command in your terminal:
+3. **Install the required packages:**
+   ```
+   pip install -r requirements.txt
+   ```
 
 ## Usage
 
@@ -97,8 +93,6 @@ This script will first check for the WHO dataset and download it if it's not pre
 ## Contact
 
 For any questions, comments, or suggestions, please feel free to contact the first author or corresponding author:
-
-* Hengtao Zhang: zhanght@gd
-
+* Hengtao Zhang: zhanght@gdou.edu.cn
 * Yuanke Qu: quxiaoke@gdou.edu.cn
 
