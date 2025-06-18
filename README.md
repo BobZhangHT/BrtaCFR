@@ -28,7 +28,11 @@ To set up the necessary environment to run the code, please follow these steps:
 
    ```
    git clone https://github.com/your-username/BrtaCFR.
-   git cd BrtaCFR
+   ```
+
+   ```
+   git
+   cd BrtaCFR
    ```
 
 2. **Create and activate a virtual environment (recommended):**
@@ -38,43 +42,43 @@ To set up the necessary environment to run the code, please follow these steps:
    source venv/bin/activate  # On Windows, use `venv\Scripts\activate`
    ```
 
-3. **Install the required packages:**
-
-   ```
-   pip install -r requirements.txt
-   ```
+3. **Install the required packages:**To run the six simulation scenarios (with 1000 replications each) and the full sensitivity analysis, execute the following command in your terminal:
 
 ## Usage
 
-&#x20;
-
 The analyses from the manuscript can be reproduced using the provided scripts.
 
-### 1. Simulation Study
+### Simulation Study & Sensitivity Analysis
 
-To run the six simulation scenarios and generate the corresponding plot (as seen in Figure 1 of the manuscript), execute the following command:
-
-Bash
+To run the six simulation scenarios (with 1000 replications each) and the full sensitivity analysis, execute the following command in your terminal:
 
 ```
 python run_simulation.py
 ```
 
-This script will run the estimation for all six scenarios (A-F), print the progress to the console, and save the final plot as simulation_results.png. The plot demonstrates the BrtaCFR estimator's superior ability to capture diverse fatality rate patterns compared to cCFR and mCFR.
+This single command will perform the entire simulation pipeline:
 
+* It runs replications in parallel using all available CPU cores.
 
+* Progress for each scenario and analysis case is displayed with a tqdm progress bar.
 
-### 2. Real-Data Application (Japan)
+* **Save & Resume**: Results for each individual replication are saved in the results/ directory. If the script is stopped and restarted, it will automatically skip the already completed replications.
 
-To reproduce the analysis on the COVID-19 data from Japan (as seen in Figure 4 of the manuscript), run:
+* **Outputs**: Upon completion, the script generates two publication-quality PDF figures in the root directory:
 
-Bash
+  1. `simulation.pdf`: Compares cCFR, mCFR, and BrtaCFR against the true fatality rate.
+
+  2. `simulation_sensitivity.pdf`: Compares the BrtaCFR estimates under the three different delay distribution assumptions (BrtaCFR, BrtaCFR+, BrtaCFR-).
+
+### Real-Data Application (Japan)
+
+To reproduce the analysis on the COVID-19 data from Japan, which compares cCFR, mCFR, and the smoothed BrtaCFR, run:
 
 ```
 python run_application.py
 ```
 
-This script will first check for the WHO dataset (WHO-COVID-19-global-daily-data.csv) and download it if it is not present. It will then process the data for Japan, run the BrtaCFR estimator, and save the resulting plot as japan_application_results.png. The plot shows how the estimator captures the dynamic changes in the fatality rate in Japan in relation to major pandemic waves and public health policies.
+This script will first check for the WHO dataset and download it if it's not present. It will then run the estimators and save the resulting plot as `japan_application_results.pdf`.
 
 
 
@@ -90,15 +94,11 @@ This script will first check for the WHO dataset (WHO-COVID-19-global-daily-data
 └── README.md               # This documentation
 ```
 
-
-
 ## Contact
-
-&#x20;
 
 For any questions, comments, or suggestions, please feel free to contact the first author or corresponding author:
 
-* Hengtao Zhang: zhanght@gdou.edu.cn
+* Hengtao Zhang: zhanght@gd
 
 * Yuanke Qu: quxiaoke@gdou.edu.cn
 
