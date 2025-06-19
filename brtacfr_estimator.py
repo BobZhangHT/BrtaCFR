@@ -6,25 +6,71 @@ import pymc as pm
 import pytensor.tensor as pt
 from scipy.stats import gamma
 
+# =============================================================================
+# Custom Log-Probability Function for the Prior
+# =============================================================================
+
 def logp(value, mu, lam, sigma, T):
     """
-    Estimate the log-likelihood for the beta mixture prior (Normal+Fused LASSO)
+    Custom log-probability for the mixture prior on beta.
+
+    This prior combines a Fused LASSO penalty with a Normal distribution,
+    encouraging both smoothness (piecewise constant) and regularization
+    towards a prior mean (mu).
+
+    Args:
+        value (pyt.Tensor): The parameter vector (beta).
+        mu (pyt.Tensor): The prior mean for the Normal component.
+        lam (pyt.Tensor): The smoothing parameter for the Fused LASSO penalty.
+        sigma (float): The standard deviation for the Normal component.
+        T (int): The length of the time series.
+
+    Returns:
+        pyt.Tensor: The log-probability of the prior.
     """
+    # Fused LASSO component: Penalizes large differences between adjacent time points
     fused_lasso_logp = -lam*pt.sum(pt.abs(pt.diff(value)))+(T-1)*pt.log(lam/2)
+
+    # Normal component: Pulls the estimate towards the prior mean (logit-cCFR)
     normal_logp = -0.5*pt.sum((value-mu)**2)/sigma**2-0.5*T*pt.log(2*np.pi*sigma**2)
+    
     return fused_lasso_logp + normal_logp
+
+# =============================================================================
+# Helper Function for mCFR Calculation
+# =============================================================================
 
 def mCFR_EST(c_t, d_t, f_k):
     """
-    Estimate the modified case fatality rate
+    Estimates the modified Case Fatality Rate (mCFR).
+
+    This estimator adjusts the denominator of the crude CFR by convolving the
+    case counts with the delay distribution.
+
+    Args:
+        c_t (np.ndarray): Daily case counts.
+        d_t (np.ndarray): Daily death counts.
+        f_k (np.ndarray): Probability mass function of the delay distribution.
+
+    Returns:
+        np.ndarray: The time series of mCFR estimates.
     """
     T = c_t.shape[0]
+    # Adjust the denominator by the delay distribution
     c_t_d = np.array([np.sum(np.flip(f_k[:i])*c_t[:i]) for i in np.arange(1,T+1)])
+    # Compute the cumulative fatality rate with the adjusted denominator
     return np.array([np.sum(d_t[:i])/(np.sum(c_t_d[:i])+1e-10) for i in np.arange(1,T+1)])
+
+# =============================================================================
+# Main BrtaCFR Estimator Function
+# =============================================================================
 
 def BrtaCFR_estimator(c_t, d_t, F_paras):
     """
     Estimates the Bayesian real-time adjusted Case Fatality Rate (BrtaCFR).
+
+    This function implements the Bayesian model described in the manuscript to
+    estimate the time-varying case fatality rate, p(t).
 
     Args:
         c_t (np.array): Time series of daily confirmed cases.
@@ -79,15 +125,15 @@ def BrtaCFR_estimator(c_t, d_t, F_paras):
         # Likelihood
         pm.Poisson('deaths', mu=mu_t, observed=d_t)
 
-    # Inference
+    # --- 3. Inference ---
     with model:
         # Use ADVI for fast approximation
         approx = pm.fit(100000, method=pm.ADVI(random_seed=2025), progressbar=False)
         
-    # Draw samples from the posterior
+    # Draw samples from the approximated posterior distribution
     idata = approx.sample(draws=1000, random_seed=2025)
     
-    # Extract results
+    # --- 4. Extract and Return Results ---
     BrtaCFR_est = idata.posterior['p_t'].mean(dim=('chain', 'draw')).values
     CrI = idata.posterior['p_t'].quantile([0.025, 0.975], dim=('chain', 'draw')).values
     
