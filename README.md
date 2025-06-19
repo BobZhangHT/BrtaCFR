@@ -1,7 +1,7 @@
 # A Bayesian Framework for Real-Time Estimation of Time-Varying Case Fatality Rates
 
 
-This repository contains the official Python implementation for the manuscript: "**A Bayesian Framework for Real-Time Estimation of Time-Varying Case Fatality Rates with Application to COVID-19 Policy Periods in Japan**".
+This repository contains the official Python implementation for the manuscript: "**A Bayesian Estimator of the Real-time Case Fatality Rate in Emerging Pandemic to Inform Public Health Policy-Making**".
 
 Our work introduces the Bayesian real-time adjusted Case Fatality Rate (BrtaCFR) estimator, a method designed to provide robust, delay-adjusted, and time-varying estimates of disease severity. It uses only standard epidemiological surveillance data (daily case and death counts) and offers a complete solution for uncertainty quantification and data-driven smoothing, overcoming key limitations of previous frequentist approaches.
 
