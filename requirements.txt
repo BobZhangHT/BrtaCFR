@@ -6,3 +6,5 @@ arviz>=0.15.0
 matplotlib>=3.6.0
 requests>=2.28.0
 statsmodels>=0.14.4
+joblib>=1.2.0
+tqdm>=4.64.0

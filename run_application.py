@@ -10,7 +10,7 @@ from scipy.stats import gamma
 from statsmodels.nonparametric.kernel_regression import KernelReg
 
 # Import the core estimator function and the mCFR helper
-from brtacfr_estimator import BrtaCFR_estimator, mCFR_EST
+from methods import BrtaCFR_estimator, mCFR_EST
 
 # =============================================================================
 # Global Parameters
