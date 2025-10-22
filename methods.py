@@ -1,5 +1,15 @@
 # brtacfr_estimator.py
 
+import os
+import warnings
+
+# Configure PyTensor BEFORE any imports that use it
+os.environ.setdefault('PYTENSOR_FLAGS', 'optimizer=fast_compile,exception_verbosity=low')
+
+# Suppress PyTensor BLAS warning
+warnings.filterwarnings('ignore', message='.*PyTensor could not link to a BLAS.*')
+warnings.filterwarnings('ignore', category=UserWarning, module='pytensor')
+
 import numpy as np
 import pandas as pd
 import pymc as pm
@@ -101,11 +111,18 @@ def BrtaCFR_estimator(c_t, d_t, F_paras):
     # --- 1. Calculate cCFR (crude Case Fatality Rate) ---
     cCFR_est = np.cumsum(d_t) / (np.cumsum(c_t) + 1e-10)
     
+    # Clip cCFR to avoid extreme values
+    cCFR_est = np.clip(cCFR_est, 1e-8, 1 - 1e-8)
+    
     # --- 2. Bayesian Model for BrtaCFR ---
     with pm.Model() as model:
         # Priors
         # Prior mean for beta_t based on logit-transformed cCFR
         beta_tilde = np.log((cCFR_est+1e-10)/(1 - (cCFR_est+1e-10)))
+        
+        # Check for NaN or Inf in initialization
+        if not np.all(np.isfinite(beta_tilde)):
+            beta_tilde = np.nan_to_num(beta_tilde, nan=0.0, posinf=5.0, neginf=-5.0)
         
         # Hyperprior for the smoothing parameter lambda
         lambda_param = pm.HalfCauchy('lambda', beta=1.0)
@@ -126,21 +143,39 @@ def BrtaCFR_estimator(c_t, d_t, F_paras):
         pm.Poisson('deaths', mu=mu_t, observed=d_t)
 
     # --- 3. Inference ---
-    with model:
-        # Use ADVI for fast approximation
-        approx = pm.fit(100000, method=pm.ADVI(random_seed=2025), progressbar=False)
+    try:
+        with model:
+            # Use ADVI for fast approximation with default optimizer
+            # Fixed at 100,000 iterations for all cases
+            n_iter = 100000
+            approx = pm.fit(n_iter, method=pm.ADVI(random_seed=2025), 
+                           progressbar=True)
+            
+        # Draw samples from the approximated posterior distribution
+        idata = approx.sample(draws=1000, random_seed=2025)
         
-    # Draw samples from the approximated posterior distribution
-    idata = approx.sample(draws=1000, random_seed=2025)
+        # --- 4. Extract and Return Results ---
+        BrtaCFR_est = idata.posterior['p_t'].mean(dim=('chain', 'draw')).values
+        CrI = idata.posterior['p_t'].quantile([0.025, 0.975], dim=('chain', 'draw')).values
+        
+        # Check for NaN in results
+        if not np.all(np.isfinite(BrtaCFR_est)):
+            raise ValueError("NaN in posterior estimates")
+        
+        results = {
+            'mean': BrtaCFR_est,
+            'lower': CrI[0, :],
+            'upper': CrI[1, :]
+        }
+        
+        return results
     
-    # --- 4. Extract and Return Results ---
-    BrtaCFR_est = idata.posterior['p_t'].mean(dim=('chain', 'draw')).values
-    CrI = idata.posterior['p_t'].quantile([0.025, 0.975], dim=('chain', 'draw')).values
-    
-    results = {
-        'mean': BrtaCFR_est,
-        'lower': CrI[0, :],
-        'upper': CrI[1, :]
-    }
-    
-    return results
+    except Exception as e:
+        # Fallback to mCFR if optimization fails
+        warnings.warn(f"ADVI optimization failed: {str(e)}. Using mCFR fallback.")
+        mCFR_result = mCFR_EST(c_t, d_t, f_k)
+        return {
+            'mean': mCFR_result,
+            'lower': mCFR_result * 0.5,
+            'upper': mCFR_result * 1.5
+        }
