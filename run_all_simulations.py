@@ -57,6 +57,7 @@ from tqdm import tqdm
 from scipy.stats import gamma, weibull_min, lognorm
 from scipy.special import gamma as gamma_func
 from scipy.optimize import fsolve
+from scipy import stats
 import pymc as pm
 import pytensor.tensor as pt
 import arviz as az
@@ -103,8 +104,8 @@ DEFAULT_CONFIG = {
 # Demo mode configuration (fast check)
 DEMO_CONFIG = {
     'main_reps': 2,
-    'sensitivity_reps': 10,
-    'mcmc_reps': 5,
+    'sensitivity_reps': 2,
+    'mcmc_reps': 2,
     'n_jobs': -1,
     'checkpoint_dir': './checkpoints_demo',
     'output_dir': './outputs_demo',
@@ -206,7 +207,7 @@ class CheckpointManager:
         self.save(name, data)
         filepath = self.checkpoint_dir / f"{name}.pkl"
         size_kb = filepath.stat().st_size / 1024
-        print(f"  💾 Checkpoint saved: {name} ({size_kb:.1f} KB)")
+        print(f"  [SAVED] Checkpoint saved: {name} ({size_kb:.1f} KB)")
     
     def load(self, name):
         """Load checkpoint data."""
@@ -343,14 +344,13 @@ def run_main_analysis_single(data, include_diagnostics=True):
         brta_results = run_brtacfr_with_diagnostics(CT, dt, (TRUE_GAMMA_MEAN, TRUE_GAMMA_SHAPE))
         runtime = time.time() - start_time
         
-        # Compute metrics (using logit-transformed MAE)
-        mae = logit_mae(brta_results['mean'], pt_true)
+        # Compute metrics (using logit-transformed MAE) for all methods
+        brta_mae = logit_mae(brta_results['mean'], pt_true)
+        cCFR_mae = logit_mae(cCFR, pt_true)
+        mCFR_mae = logit_mae(mCFR, pt_true)
         coverage = np.mean((pt_true >= brta_results['lower']) & (pt_true <= brta_results['upper']))
         
-        # Posterior predictive check (consumes mu_samples, doesn't save them)
-        ppc = posterior_predictive_check(dt, brta_results['mu_samples'])
-        
-        # Return only summary statistics (no large arrays like mu_samples)
+        # Return only summary statistics (p-values already calculated in run_brtacfr_with_diagnostics)
         return {
             'cCFR': cCFR,
             'mCFR': mCFR,
@@ -359,13 +359,14 @@ def run_main_analysis_single(data, include_diagnostics=True):
             'BrtaCFR_upper': brta_results['upper'],
             # Diagnostic data (scalars only)
             'runtime': runtime,
-            'ess': brta_results['ess'],
-            'mcse': brta_results['mcse'],
-            'mae': mae,
+            'mae': brta_mae,
+            'cCFR_mae': cCFR_mae,
+            'mCFR_mae': mCFR_mae,
             'coverage': coverage,
-            'ppp_total': ppc['ppp_total'],
-            'ppp_chi2': ppc['ppp_chi2'],
-            # Note: mu_samples not saved - reduces checkpoint size by ~10x
+            'elbo_trace': brta_results['elbo_trace'],
+            'pvalue_q25': brta_results['pvalue_q25'],
+            'pvalue_q50': brta_results['pvalue_q50'],
+            'pvalue_q75': brta_results['pvalue_q75'],
         }
     else:
         brta_results = BrtaCFR_estimator(CT, dt, (TRUE_GAMMA_MEAN, TRUE_GAMMA_SHAPE))
@@ -378,7 +379,7 @@ def run_main_analysis_single(data, include_diagnostics=True):
         }
 
 def run_brtacfr_with_diagnostics(c_t, d_t, F_paras):
-    """BrtaCFR with full diagnostics for simulation table."""
+    """BrtaCFR with diagnostics: calculate p-values at quantiles directly to save memory."""
     T = len(c_t)
     mean_delay, shape_delay = F_paras
     scale_delay = mean_delay / shape_delay
@@ -416,6 +417,14 @@ def run_brtacfr_with_diagnostics(c_t, d_t, F_paras):
             approx = pm.fit(100000, method=pm.ADVI(random_seed=2025), 
                            progressbar=False)
         
+        # Extract ELBO trace from approximation history
+        # Note: approx.hist contains negative log-likelihood values, we need to convert to ELBO
+        if hasattr(approx, 'hist') and approx.hist is not None:
+            # approx.hist contains negative log-likelihood, convert to ELBO (which should be negative)
+            elbo_trace = -approx.hist  # Convert to actual ELBO (negative values)
+        else:
+            elbo_trace = None
+        
         idata = approx.sample(draws=1000, random_seed=2025)
         
         BrtaCFR_est = idata.posterior['p_t'].mean(dim=('chain', 'draw')).values
@@ -426,58 +435,48 @@ def run_brtacfr_with_diagnostics(c_t, d_t, F_paras):
         if not np.all(np.isfinite(BrtaCFR_est)):
             raise ValueError("NaN in posterior estimates")
         
-        try:
-            ess = az.ess(idata, var_names=['p_t'])['p_t'].mean().values
-            mcse = az.mcse(idata, var_names=['p_t'])['p_t'].mean().values
-        except:
-            ess, mcse = None, None
+        # Calculate Bayesian p-values at quantiles (one-sided) to save memory
+        quantiles = [0.25, 0.50, 0.75]
+        pvalues = {}
+        
+        # Generate posterior predictive samples
+        pred_deaths_samples = np.random.poisson(mu_samples)
+        
+        for q in quantiles:
+            # Compute quantile statistic for observed data
+            obs_quantile = np.quantile(d_t, q)
+            
+            # Compute quantile statistics for predicted samples
+            pred_quantiles = np.array([np.quantile(pred_deaths_samples[i, :], q) 
+                                      for i in range(len(pred_deaths_samples))])
+            
+            # One-sided Bayesian p-value (as per formula in image)
+            pvalue = np.mean(pred_quantiles >= obs_quantile)
+            pvalues[f'pvalue_q{int(q*100)}'] = pvalue
         
         return {
             'mean': BrtaCFR_est,
             'lower': CrI[0, :],
             'upper': CrI[1, :],
-            'mu_samples': mu_samples,
-            'ess': ess,
-            'mcse': mcse,
+            'elbo_trace': elbo_trace,
+            'pvalue_q25': pvalues['pvalue_q25'],
+            'pvalue_q50': pvalues['pvalue_q50'],
+            'pvalue_q75': pvalues['pvalue_q75'],
         }
     
     except Exception as e:
         warnings.warn(f"ADVI optimization failed: {str(e)}. Using mCFR fallback.")
         mCFR_result = mCFR_EST(c_t, d_t, f_k)
-        mu_samples = np.tile(mCFR_result * c_t, (1000, 1))
         return {
             'mean': mCFR_result,
             'lower': mCFR_result * 0.5,
             'upper': mCFR_result * 1.5,
-            'mu_samples': mu_samples,
-            'ess': None,
-            'mcse': None,
+            'elbo_trace': None,
+            'pvalue_q25': None,
+            'pvalue_q50': None,
+            'pvalue_q75': None,
         }
 
-def posterior_predictive_check(observed_deaths, mu_samples):
-    """Perform posterior predictive check."""
-    pred_deaths = np.random.poisson(mu_samples)
-    obs_stat = np.sum(observed_deaths)
-    pred_stats = np.sum(pred_deaths, axis=1)
-    
-    ppp = np.mean(pred_stats >= obs_stat)
-    if ppp > 0.5:
-        ppp = 1 - ppp
-    ppp = 2 * ppp
-    
-    pred_mean = np.mean(pred_deaths, axis=0)
-    pred_std = np.std(pred_deaths, axis=0) + 1e-10
-    obs_chi2 = np.sum(((observed_deaths - pred_mean) / pred_std) ** 2)
-    
-    pred_chi2 = np.array([np.sum(((pred_deaths[i] - pred_mean) / pred_std) ** 2) 
-                          for i in range(len(pred_deaths))])
-    
-    ppp_chi2 = np.mean(pred_chi2 >= obs_chi2)
-    if ppp_chi2 > 0.5:
-        ppp_chi2 = 1 - ppp_chi2
-    ppp_chi2 = 2 * ppp_chi2
-    
-    return {'ppp_total': ppp, 'ppp_chi2': ppp_chi2}
 
 def run_main_analysis(config, checkpoint_mgr, resume=False):
     """Run main analysis for all scenarios with per-replication checkpointing."""
@@ -489,7 +488,7 @@ def run_main_analysis(config, checkpoint_mgr, resume=False):
     
     # Check if analysis is fully complete
     if not resume and checkpoint_mgr.exists(final_checkpoint_name):
-        print("  ✅ Main analysis already complete! Loading existing results...")
+        print("  [OK] Main analysis already complete! Loading existing results...")
         return checkpoint_mgr.load(final_checkpoint_name)
     
     n_reps = config['main_reps']
@@ -507,12 +506,12 @@ def run_main_analysis(config, checkpoint_mgr, resume=False):
         pending = checkpoint_mgr.get_pending_replications('main', scenario_key, n_reps)
         
         if len(completed) > 0:
-            print(f"    📂 Found {len(completed)}/{n_reps} completed replications")
+            print(f"    [FOUND] Found {len(completed)}/{n_reps} completed replications")
         if len(pending) == 0:
-            print(f"    ✅ All replications complete, using cached results")
+            print(f"    [OK] All replications complete, using cached results")
             results = list(completed.values())
         else:
-            print(f"    🔄 Running {len(pending)} pending replications...")
+            print(f"    [RUNNING] Running {len(pending)} pending replications...")
             
             # Generate data for pending replications only
             pending_data = []
@@ -534,7 +533,7 @@ def run_main_analysis(config, checkpoint_mgr, resume=False):
             
             # Combine with completed results
             results = list(completed.values()) + new_results
-            print(f"    ✅ Scenario {scenario_key} complete ({n_reps}/{n_reps} replications)")
+            print(f"    [OK] Scenario {scenario_key} complete ({n_reps}/{n_reps} replications)")
         
         # Aggregate results
         all_results[scenario_key] = {
@@ -546,17 +545,19 @@ def run_main_analysis(config, checkpoint_mgr, resume=False):
             # Diagnostic data for simulation table
             'runtime_mean': np.mean([r['runtime'] for r in results]),
             'runtime_std': np.std([r['runtime'] for r in results]),
-            'ess_values': [r['ess'] for r in results if r['ess'] is not None],
-            'mcse_values': [r['mcse'] for r in results if r['mcse'] is not None],
             'mae_values': [r['mae'] for r in results],
+            'cCFR_mae_values': [r['cCFR_mae'] for r in results],
+            'mCFR_mae_values': [r['mCFR_mae'] for r in results],
             'coverage_values': [r['coverage'] for r in results],
-            'ppp_total_values': [r['ppp_total'] for r in results],
-            'ppp_chi2_values': [r['ppp_chi2'] for r in results],
+            'elbo_traces': [r['elbo_trace'] for r in results if r['elbo_trace'] is not None],
+            'pvalue_q25_values': [r['pvalue_q25'] for r in results if r['pvalue_q25'] is not None],
+            'pvalue_q50_values': [r['pvalue_q50'] for r in results if r['pvalue_q50'] is not None],
+            'pvalue_q75_values': [r['pvalue_q75'] for r in results if r['pvalue_q75'] is not None],
         }
     
     # Save final aggregated results
     checkpoint_mgr.save_verbose(final_checkpoint_name, all_results)
-    print("\n  ✅ Main analysis complete!")
+    print("\n  [OK] Main analysis complete!")
     
     return all_results
 
@@ -576,18 +577,22 @@ def generate_simulation_table(main_results, output_dir):
     for scenario_key, results in main_results.items():
         row = {
             'Scenario': f"{scenario_key}: {SCENARIOS[scenario_key]['name']}",
-            'Runtime_Mean': results['runtime_mean'],
-            'Runtime_SD': results['runtime_std'],
-            'ESS_Mean': np.mean(results['ess_values']) if results['ess_values'] else None,
-            'ESS_SD': np.std(results['ess_values']) if results['ess_values'] else None,
-            'MCSE_Mean': np.mean(results['mcse_values']) if results['mcse_values'] else None,
-            'MCSE_SD': np.std(results['mcse_values']) if results['mcse_values'] else None,
-            'MAE_Mean': np.mean(results['mae_values']),
-            'MAE_SD': np.std(results['mae_values']),
-            'Coverage_Mean': np.mean(results['coverage_values']),
-            'Coverage_SD': np.std(results['coverage_values']),
-            'PPP_Total_Mean': np.mean(results['ppp_total_values']),
-            'PPP_Chi2_Mean': np.mean(results['ppp_chi2_values']),
+            'runtime_mean': results['runtime_mean'],
+            'runtime_std': results['runtime_std'],
+            'mae_mean': np.mean(results['mae_values']),
+            'mae_std': np.std(results['mae_values']),
+            'cCFR_mae_mean': np.mean(results['cCFR_mae_values']),
+            'cCFR_mae_std': np.std(results['cCFR_mae_values']),
+            'mCFR_mae_mean': np.mean(results['mCFR_mae_values']),
+            'mCFR_mae_std': np.std(results['mCFR_mae_values']),
+            'coverage_mean': np.mean(results['coverage_values']),
+            'coverage_std': np.std(results['coverage_values']),
+            'pvalue_q25_mean': np.mean(results['pvalue_q25_values']) if results['pvalue_q25_values'] else None,
+            'pvalue_q25_std': np.std(results['pvalue_q25_values']) if results['pvalue_q25_values'] else None,
+            'pvalue_q50_mean': np.mean(results['pvalue_q50_values']) if results['pvalue_q50_values'] else None,
+            'pvalue_q50_std': np.std(results['pvalue_q50_values']) if results['pvalue_q50_values'] else None,
+            'pvalue_q75_mean': np.mean(results['pvalue_q75_values']) if results['pvalue_q75_values'] else None,
+            'pvalue_q75_std': np.std(results['pvalue_q75_values']) if results['pvalue_q75_values'] else None,
         }
         table_data.append(row)
     
@@ -596,13 +601,13 @@ def generate_simulation_table(main_results, output_dir):
     # Save CSV
     csv_path = Path(output_dir) / 'simulation_table_results.csv'
     df.to_csv(csv_path, index=False)
-    print(f"  ✅ Saved to: {csv_path}")
+    print(f"  [OK] Saved to: {csv_path}")
     
     # Save LaTeX
     latex_path = Path(output_dir) / 'simulation_table_latex.tex'
     with open(latex_path, 'w') as f:
         f.write(df.to_latex(index=False, float_format="%.4f"))
-    print(f"  ✅ Saved to: {latex_path}")
+    print(f"  [OK] Saved to: {latex_path}")
     
     return df
 
@@ -620,7 +625,7 @@ def run_sensitivity_gamma(config, checkpoint_mgr, resume=False):
     
     # Check if analysis is fully complete
     if not resume and checkpoint_mgr.exists(final_checkpoint_name):
-        print("  ✅ Gamma sensitivity already complete! Loading existing results...")
+        print("  [OK] Gamma sensitivity already complete! Loading existing results...")
         return checkpoint_mgr.load(final_checkpoint_name)
     
     n_reps = config['sensitivity_reps']
@@ -639,10 +644,10 @@ def run_sensitivity_gamma(config, checkpoint_mgr, resume=False):
             if len(completed) > 0:
                 print(f"    Case {case_name}: Found {len(completed)}/{n_reps} replications")
             if len(pending) == 0:
-                print(f"    ✅ {case_name} complete, using cached results")
+                print(f"    [OK] {case_name} complete, using cached results")
                 estimates = list(completed.values())
             else:
-                print(f"    🔄 {case_name}: Running {len(pending)} pending replications")
+                print(f"    [RUNNING] {case_name}: Running {len(pending)} pending replications")
                 
                 # Estimate with potentially misspecified parameters
                 F_paras = (case_params['mean'], case_params['shape'])
@@ -672,7 +677,7 @@ def run_sensitivity_gamma(config, checkpoint_mgr, resume=False):
         all_results[scenario_key] = scenario_results
     
     checkpoint_mgr.save_verbose(final_checkpoint_name, all_results)
-    print("  ✅ Gamma sensitivity complete!")
+    print("  [OK] Gamma sensitivity complete!")
     return all_results
 
 def BrtaCFR_estimator_custom_sigma(c_t, d_t, F_paras, sigma_prior):
@@ -741,7 +746,7 @@ def run_sensitivity_sigma(config, checkpoint_mgr, resume=False):
     
     # Check if analysis is fully complete
     if not resume and checkpoint_mgr.exists(final_checkpoint_name):
-        print("  ✅ Sigma sensitivity already complete! Loading existing results...")
+        print("  [OK] Sigma sensitivity already complete! Loading existing results...")
         return checkpoint_mgr.load(final_checkpoint_name)
     
     n_reps = config['sensitivity_reps']
@@ -760,10 +765,10 @@ def run_sensitivity_sigma(config, checkpoint_mgr, resume=False):
             if len(completed) > 0:
                 print(f"    Case {case_name}: Found {len(completed)}/{n_reps} replications")
             if len(pending) == 0:
-                print(f"    ✅ {case_name} (σ={sigma_val}) complete, using cached results")
+                print(f"    [OK] {case_name} (σ={sigma_val}) complete, using cached results")
                 estimates = list(completed.values())
             else:
-                print(f"    🔄 {case_name} (σ={sigma_val}): Running {len(pending)} pending replications")
+                print(f"    [RUNNING] {case_name} (σ={sigma_val}): Running {len(pending)} pending replications")
                 
                 F_paras = (TRUE_GAMMA_MEAN, TRUE_GAMMA_SHAPE)
                 
@@ -792,7 +797,7 @@ def run_sensitivity_sigma(config, checkpoint_mgr, resume=False):
         all_results[scenario_key] = scenario_results
     
     checkpoint_mgr.save_verbose(final_checkpoint_name, all_results)
-    print("  ✅ Sigma sensitivity complete!")
+    print("  [OK] Sigma sensitivity complete!")
     return all_results
 
 def get_weibull_pmf(mean, variance, T):
@@ -884,7 +889,7 @@ def run_sensitivity_distribution(config, checkpoint_mgr, resume=False):
     
     # Check if analysis is fully complete
     if not resume and checkpoint_mgr.exists(final_checkpoint_name):
-        print("  ✅ Distribution sensitivity already complete! Loading existing results...")
+        print("  [OK] Distribution sensitivity already complete! Loading existing results...")
         return checkpoint_mgr.load(final_checkpoint_name)
     
     n_reps = config['sensitivity_reps']
@@ -913,10 +918,10 @@ def run_sensitivity_distribution(config, checkpoint_mgr, resume=False):
             if len(completed) > 0:
                 print(f"    Case {case_name}: Found {len(completed)}/{n_reps} replications")
             if len(pending) == 0:
-                print(f"    ✅ {case_name} complete, using cached results")
+                print(f"    [OK] {case_name} complete, using cached results")
                 estimates = list(completed.values())
             else:
-                print(f"    🔄 {case_name}: Running {len(pending)} pending replications")
+                print(f"    [RUNNING] {case_name}: Running {len(pending)} pending replications")
                 
                 # Generate PMF once if needed
                 if case_info['type'] == 'weibull':
@@ -955,7 +960,7 @@ def run_sensitivity_distribution(config, checkpoint_mgr, resume=False):
         all_results[scenario_key] = scenario_results
     
     checkpoint_mgr.save_verbose(final_checkpoint_name, all_results)
-    print("  ✅ Distribution sensitivity complete!")
+    print("  [OK] Distribution sensitivity complete!")
     return all_results
 
 # =============================================================================
@@ -963,7 +968,15 @@ def run_sensitivity_distribution(config, checkpoint_mgr, resume=False):
 # =============================================================================
 
 def run_brtacfr_mcmc(c_t, d_t, F_paras, n_samples=500, n_chains=2, tune=500):
-    """Run BrtaCFR with MCMC (NUTS sampler)."""
+    """
+    Run BrtaCFR with MCMC using NUTS sampler.
+    
+    Conservative settings for stability:
+    - 500 samples (sufficient for comparison)
+    - 500 burn-in (tune) iterations  
+    - 2 chains for faster computation
+    - NUTS sampler (default, more robust than MH)
+    """
     T = len(c_t)
     mean_delay, shape_delay = F_paras
     scale_delay = mean_delay / shape_delay
@@ -984,7 +997,7 @@ def run_brtacfr_mcmc(c_t, d_t, F_paras, n_samples=500, n_chains=2, tune=500):
         lambda_param = pm.HalfCauchy('lambda', beta=1.0)
         beta = pm.CustomDist('beta', beta_tilde, lambda_param, 5, T, logp=logp, size=T)
         p_t = pm.Deterministic('p_t', pm.math.sigmoid(beta))
-        mu_t = pm.math.dot(fc_mat, p_t)
+        mu_t = pm.Deterministic('mu_t', pm.math.dot(fc_mat, p_t))
         pm.Poisson('deaths', mu=mu_t, observed=d_t)
     
     with model:
@@ -1020,7 +1033,7 @@ def run_mcmc_comparison(config, checkpoint_mgr, resume=False):
     
     # Check if analysis is fully complete
     if not resume and checkpoint_mgr.exists(final_checkpoint_name):
-        print("  ✅ MCMC comparison already complete! Loading existing results...")
+        print("  [OK] MCMC comparison already complete! Loading existing results...")
         return checkpoint_mgr.load(final_checkpoint_name)
     
     n_reps = config['mcmc_reps']
@@ -1040,9 +1053,11 @@ def run_mcmc_comparison(config, checkpoint_mgr, resume=False):
         if len(mcmc_completed) > 0:
             print(f"    MCMC: Found {len(mcmc_completed)}/{n_reps} replications")
         if len(mcmc_pending) > 0:
-            print(f"    🔄 Running {len(mcmc_pending)} pending MCMC replications...")
+            print(f"    [RUNNING] Running {len(mcmc_pending)} pending MCMC replications...")
+            print(f"    Note: MCMC runs sequentially (parallel MCMC can cause memory issues)")
             
-            def run_and_save_mcmc_replication(rep_idx):
+            # Run MCMC sequentially (parallel MCMC causes memory/threading issues)
+            for rep_idx in tqdm(mcmc_pending, desc="    MCMC"):
                 try:
                     data = generate_simulation_data(scenario_key, rep_idx, seed_offset=40000)
                     mcmc_start = time.time()
@@ -1055,18 +1070,12 @@ def run_mcmc_comparison(config, checkpoint_mgr, resume=False):
                         'coverage': np.mean((pt_true >= result['lower']) & (pt_true <= result['upper'])),
                     }
                     checkpoint_mgr.save_replication_result('mcmc', scenario_key, rep_idx, result_dict)
-                    return result_dict
                 except Exception as e:
-                    result_dict = {'success': False}
+                    print(f"      [ERROR] MCMC failed for {scenario_key} rep {rep_idx}: {str(e)}")
+                    result_dict = {'success': False, 'error': str(e)}
                     checkpoint_mgr.save_replication_result('mcmc', scenario_key, rep_idx, result_dict)
-                    return result_dict
-            
-            Parallel(n_jobs=config['n_jobs'])(
-                delayed(run_and_save_mcmc_replication)(rep_idx)
-                for rep_idx in tqdm(mcmc_pending, desc="    MCMC")
-            )
         else:
-            print(f"    ✅ MCMC complete, using cached results")
+            print(f"    [OK] MCMC complete, using cached results")
         
         # Check ADVI checkpoints
         advi_completed = checkpoint_mgr.get_completed_replications('advi', scenario_key, n_reps)
@@ -1075,9 +1084,11 @@ def run_mcmc_comparison(config, checkpoint_mgr, resume=False):
         if len(advi_completed) > 0:
             print(f"    ADVI: Found {len(advi_completed)}/{n_reps} replications")
         if len(advi_pending) > 0:
-            print(f"    🔄 Running {len(advi_pending)} pending ADVI replications...")
+            print(f"    [RUNNING] Running {len(advi_pending)} pending ADVI replications...")
+            print(f"    Note: ADVI runs sequentially (like old version)")
             
-            def run_and_save_advi_replication(rep_idx):
+            # Run ADVI sequentially (like old version)
+            for rep_idx in tqdm(advi_pending, desc="    ADVI"):
                 try:
                     data = generate_simulation_data(scenario_key, rep_idx, seed_offset=40000)
                     advi_start = time.time()
@@ -1090,26 +1101,28 @@ def run_mcmc_comparison(config, checkpoint_mgr, resume=False):
                         'coverage': np.mean((pt_true >= result['lower']) & (pt_true <= result['upper'])),
                     }
                     checkpoint_mgr.save_replication_result('advi', scenario_key, rep_idx, result_dict)
-                    return result_dict
                 except Exception as e:
-                    result_dict = {'success': False}
+                    print(f"      [ERROR] ADVI failed for {scenario_key} rep {rep_idx}: {str(e)}")
+                    result_dict = {'success': False, 'error': str(e)}
                     checkpoint_mgr.save_replication_result('advi', scenario_key, rep_idx, result_dict)
-                    return result_dict
-            
-            Parallel(n_jobs=config['n_jobs'])(
-                delayed(run_and_save_advi_replication)(rep_idx)
-                for rep_idx in tqdm(advi_pending, desc="    ADVI")
-            )
         else:
-            print(f"    ✅ ADVI complete, using cached results")
+            print(f"    [OK] ADVI complete, using cached results")
         
         # Reload all completed results
         mcmc_all = checkpoint_mgr.get_completed_replications('mcmc', scenario_key, n_reps)
         advi_all = checkpoint_mgr.get_completed_replications('advi', scenario_key, n_reps)
         
-        # Aggregate
+        # Aggregate and report success rates
         mcmc_success = [r for r in mcmc_all.values() if r['success']]
         advi_success = [r for r in advi_all.values() if r['success']]
+        
+        print(f"    MCMC: {len(mcmc_success)}/{len(mcmc_all)} successful")
+        print(f"    ADVI: {len(advi_success)}/{len(advi_all)} successful")
+        
+        if len(mcmc_success) == 0:
+            print(f"    [WARNING] No successful MCMC runs for scenario {scenario_key}")
+        if len(advi_success) == 0:
+            print(f"    [WARNING] No successful ADVI runs for scenario {scenario_key}")
         
         comparison_results[scenario_key] = {
             'mcmc_runtime_mean': np.mean([r['runtime'] for r in mcmc_success]) if mcmc_success else None,
@@ -1124,7 +1137,7 @@ def run_mcmc_comparison(config, checkpoint_mgr, resume=False):
         }
     
     checkpoint_mgr.save_verbose(final_checkpoint_name, comparison_results)
-    print("  ✅ MCMC comparison complete!")
+    print("  [OK] MCMC comparison complete!")
     return comparison_results
 
 # =============================================================================
@@ -1148,47 +1161,83 @@ LINESTYLES = {
 }
 
 def plot_main_analysis(main_results, output_dir):
-    """Generate main analysis plots with consistent styling."""
+    """Generate main analysis plots optimized for A4 print quality."""
     print("\n  Generating plots...")
     
-    fig, axes = plt.subplots(2, 3, figsize=(18, 10))
+    # Optimized for A4 print quality
+    plt.rcParams.update({
+        'font.size': 18,           # Base font size (increased)
+        'axes.titlesize': 22,      # Title font size
+        'axes.labelsize': 20,      # Axis label font size
+        'xtick.labelsize': 16,     # X-axis tick font size (increased)
+        'ytick.labelsize': 16,     # Y-axis tick font size (increased)
+        'legend.fontsize': 16,     # Legend font size (increased)
+        'figure.titlesize': 24,    # Figure title font size
+        'lines.linewidth': 4,      # Thicker lines for print
+        'axes.linewidth': 1.5,     # Thicker axis borders
+        'grid.linewidth': 1.2,     # Thicker grid lines
+        'xtick.major.width': 2,    # Thicker tick marks
+        'ytick.major.width': 2,
+        'xtick.major.size': 8,     # Longer tick marks
+        'ytick.major.size': 8,
+    })
+    
+    fig, axes = plt.subplots(2, 3, figsize=(26, 10))  # Flatter figure
     axes = axes.ravel()
     
     for i, (scenario_key, results) in enumerate(main_results.items()):
         ax = axes[i]
         pt_true = SCENARIOS[scenario_key]['pt']
         
-        # Plot with unified colors and line styles
+        # Plot with thicker lines for better print visibility
         ax.plot(DAYS, pt_true, color=COLORS['True'], linestyle=LINESTYLES['True'], 
-                linewidth=2.5, label='True')
+                linewidth=5, label='True', alpha=0.95)
         ax.plot(DAYS, results['cCFR_avg'], color=COLORS['cCFR'], linestyle=LINESTYLES['cCFR'],
-                linewidth=1.5, label='cCFR')
+                linewidth=4, label='cCFR', alpha=0.95)
         ax.plot(DAYS, results['mCFR_avg'], color=COLORS['mCFR'], linestyle=LINESTYLES['mCFR'],
-                linewidth=1.5, label='mCFR')
+                linewidth=4, label='mCFR', alpha=0.95)
         ax.plot(DAYS, results['BrtaCFR_avg'], color=COLORS['BrtaCFR'], linestyle=LINESTYLES['BrtaCFR'],
-                linewidth=2, label='BrtaCFR')
+                linewidth=5, label='BrtaCFR', alpha=0.95)
         ax.fill_between(DAYS, results['BrtaCFR_lower_avg'], results['BrtaCFR_upper_avg'], 
-                        color=COLORS['CrI'], alpha=0.2, label='95% CrI')
+                        color=COLORS['CrI'], alpha=0.25, label='95% CrI')
         
-        ax.set_title(f"({scenario_key}) {SCENARIOS[scenario_key]['name']}", fontsize=14)
-        ax.set_xlabel('Days', fontsize=12)
-        ax.set_ylabel('Fatality Rate', fontsize=12)
-        ax.grid(True, linestyle=':', alpha=0.6)
+        ax.set_title(f"({scenario_key}) {SCENARIOS[scenario_key]['name']}", 
+                    fontsize=22, fontweight='bold', pad=12)
+        ax.set_xlabel('Days', fontsize=20, fontweight='bold', labelpad=10)
+        ax.set_ylabel('Fatality Rate', fontsize=20, fontweight='bold', labelpad=10)
+        ax.grid(True, linestyle=':', alpha=0.6, linewidth=1.2)
+        
         if i == 0:
-            ax.legend(loc='best', fontsize=10)
+            ax.legend(loc='upper right', fontsize=14, framealpha=0.95, edgecolor='black', 
+                     frameon=True, bbox_to_anchor=(1.0, 1.0))
     
-    plt.tight_layout()
+    plt.tight_layout(pad=1.0)
     output_path = Path(output_dir) / 'simulation.pdf'
-    plt.savefig(output_path, dpi=300, bbox_inches='tight')
-    print(f"  ✅ Saved to: {output_path}")
+    plt.savefig(output_path, dpi=300, bbox_inches='tight', facecolor='white', edgecolor='none')
+    print(f"  [OK] Saved to: {output_path}")
     plt.close()
+    
+    # Reset rcParams to default
+    plt.rcParams.update(plt.rcParamsDefault)
 
 def plot_sensitivity_results(gamma_results, sigma_results, dist_results, output_dir):
     """Plot all sensitivity analysis results with 6x2 layout for each analysis."""
     print("\n  Generating sensitivity plots...")
     
+    # Set global font sizes for better publication quality
+    plt.rcParams.update({
+        'font.size': 14,           # Base font size
+        'axes.titlesize': 16,      # Title font size
+        'axes.labelsize': 14,      # Axis label font size
+        'xtick.labelsize': 12,     # X-axis tick font size
+        'ytick.labelsize': 12,     # Y-axis tick font size
+        'legend.fontsize': 12,     # Legend font size
+        'figure.titlesize': 18,    # Figure title font size
+        'lines.linewidth': 3,      # Default line width
+    })
+    
     # Plot 1: Gamma sensitivity (6x2 layout)
-    fig, axes = plt.subplots(6, 2, figsize=(16, 24))
+    fig, axes = plt.subplots(6, 2, figsize=(18, 28))
     
     gamma_colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd']
     
@@ -1196,18 +1245,19 @@ def plot_sensitivity_results(gamma_results, sigma_results, dist_results, output_
         # Left column: Curves
         ax_curve = axes[i, 0]
         ax_curve.plot(DAYS, SCENARIOS[scenario_key]['pt'], color=COLORS['True'], 
-                     linestyle='-', linewidth=2.5, label='True')
+                     linestyle='-', linewidth=4, label='True', alpha=0.9)
         
         for j, (case_name, results) in enumerate(gamma_results[scenario_key].items()):
             ax_curve.plot(DAYS, results['mean_estimate'], 
                          label=case_name.replace('_', ' '),
-                         color=gamma_colors[j], linestyle='--', linewidth=1.5)
+                         color=gamma_colors[j], linestyle='--', linewidth=3, alpha=0.9)
         
-        ax_curve.set_xlabel('Days', fontsize=11)
-        ax_curve.set_ylabel('Fatality Rate', fontsize=11)
-        ax_curve.set_title(f"({scenario_key}) {SCENARIOS[scenario_key]['name']}", fontsize=12)
-        ax_curve.legend(fontsize=9, loc='best')
-        ax_curve.grid(True, alpha=0.3)
+        ax_curve.set_xlabel('Days', fontsize=14, fontweight='bold')
+        ax_curve.set_ylabel('Fatality Rate', fontsize=14, fontweight='bold')
+        ax_curve.set_title(f"({scenario_key}) {SCENARIOS[scenario_key]['name']}", fontsize=16, fontweight='bold')
+        ax_curve.legend(fontsize=12, loc='best', framealpha=0.9, edgecolor='black')
+        ax_curve.grid(True, alpha=0.5, linewidth=1.5)
+        ax_curve.tick_params(axis='both', which='major', labelsize=12, width=2, length=6)
         
         # Right column: MAE
         ax_mae = axes[i, 1]
@@ -1216,21 +1266,22 @@ def plot_sensitivity_results(gamma_results, sigma_results, dist_results, output_
         mae_stds = [r['mae_std'] for r in gamma_results[scenario_key].values()]
         
         bars = ax_mae.bar(range(len(case_names)), mae_means, yerr=mae_stds, 
-                          capsize=5, alpha=0.7, color=gamma_colors)
+                          capsize=8, alpha=0.8, color=gamma_colors, edgecolor='black', linewidth=1.5)
         ax_mae.set_xticks(range(len(case_names)))
-        ax_mae.set_xticklabels(case_names, rotation=45, ha='right', fontsize=9)
-        ax_mae.set_ylabel('Mean Absolute Error', fontsize=11)
-        ax_mae.set_title(f'MAE - {SCENARIOS[scenario_key]["name"]}', fontsize=12)
-        ax_mae.grid(True, alpha=0.3, axis='y')
+        ax_mae.set_xticklabels(case_names, rotation=45, ha='right', fontsize=12, fontweight='bold')
+        ax_mae.set_ylabel('Mean Absolute Error', fontsize=14, fontweight='bold')
+        ax_mae.set_title(f'MAE - {SCENARIOS[scenario_key]["name"]}', fontsize=16, fontweight='bold')
+        ax_mae.grid(True, alpha=0.5, axis='y', linewidth=1.5)
+        ax_mae.tick_params(axis='both', which='major', labelsize=12, width=2, length=6)
     
     plt.tight_layout()
     output_path = Path(output_dir) / 'sensitivity_gamma.pdf'
-    plt.savefig(output_path, dpi=300, bbox_inches='tight')
-    print(f"  ✅ Saved to: {output_path}")
+    plt.savefig(output_path, dpi=300, bbox_inches='tight', facecolor='white', edgecolor='none')
+    print(f"  [OK] Saved to: {output_path}")
     plt.close()
     
     # Plot 2: Sigma sensitivity (6x2 layout)
-    fig, axes = plt.subplots(6, 2, figsize=(16, 24))
+    fig, axes = plt.subplots(6, 2, figsize=(18, 28))
     
     sigma_colors = ['#7f007f', '#0000ff', '#00ff00', '#ffa500', '#ff0000']
     
@@ -1238,19 +1289,20 @@ def plot_sensitivity_results(gamma_results, sigma_results, dist_results, output_
         # Left column: Curves
         ax_curve = axes[i, 0]
         ax_curve.plot(DAYS, SCENARIOS[scenario_key]['pt'], color=COLORS['True'],
-                     linestyle='-', linewidth=2.5, label='True')
+                     linestyle='-', linewidth=4, label='True', alpha=0.9)
         
         for j, (case_name, results) in enumerate(sigma_results[scenario_key].items()):
             sigma_val = SIGMA_SENSITIVITY[case_name]
             ax_curve.plot(DAYS, results['mean_estimate'], 
                          label=f"σ={sigma_val}",
-                         color=sigma_colors[j], linestyle='--', linewidth=1.5)
+                         color=sigma_colors[j], linestyle='--', linewidth=3, alpha=0.9)
         
-        ax_curve.set_xlabel('Days', fontsize=11)
-        ax_curve.set_ylabel('Fatality Rate', fontsize=11)
-        ax_curve.set_title(f"({scenario_key}) {SCENARIOS[scenario_key]['name']}", fontsize=12)
-        ax_curve.legend(fontsize=9, loc='best')
-        ax_curve.grid(True, alpha=0.3)
+        ax_curve.set_xlabel('Days', fontsize=14, fontweight='bold')
+        ax_curve.set_ylabel('Fatality Rate', fontsize=14, fontweight='bold')
+        ax_curve.set_title(f"({scenario_key}) {SCENARIOS[scenario_key]['name']}", fontsize=16, fontweight='bold')
+        ax_curve.legend(fontsize=12, loc='best', framealpha=0.9, edgecolor='black')
+        ax_curve.grid(True, alpha=0.5, linewidth=1.5)
+        ax_curve.tick_params(axis='both', which='major', labelsize=12, width=2, length=6)
         
         # Right column: MAE
         ax_mae = axes[i, 1]
@@ -1259,21 +1311,22 @@ def plot_sensitivity_results(gamma_results, sigma_results, dist_results, output_
         mae_stds = [r['mae_std'] for r in sigma_results[scenario_key].values()]
         
         bars = ax_mae.bar(range(len(sigma_labels)), mae_means, yerr=mae_stds,
-                          capsize=5, alpha=0.7, color=sigma_colors)
+                          capsize=8, alpha=0.8, color=sigma_colors, edgecolor='black', linewidth=1.5)
         ax_mae.set_xticks(range(len(sigma_labels)))
-        ax_mae.set_xticklabels(sigma_labels, fontsize=10)
-        ax_mae.set_ylabel('Mean Absolute Error', fontsize=11)
-        ax_mae.set_title(f'MAE - {SCENARIOS[scenario_key]["name"]}', fontsize=12)
-        ax_mae.grid(True, alpha=0.3, axis='y')
+        ax_mae.set_xticklabels(sigma_labels, fontsize=12, fontweight='bold')
+        ax_mae.set_ylabel('Mean Absolute Error', fontsize=14, fontweight='bold')
+        ax_mae.set_title(f'MAE - {SCENARIOS[scenario_key]["name"]}', fontsize=16, fontweight='bold')
+        ax_mae.grid(True, alpha=0.5, axis='y', linewidth=1.5)
+        ax_mae.tick_params(axis='both', which='major', labelsize=12, width=2, length=6)
     
     plt.tight_layout()
     output_path = Path(output_dir) / 'sensitivity_sigma.pdf'
-    plt.savefig(output_path, dpi=300, bbox_inches='tight')
-    print(f"  ✅ Saved to: {output_path}")
+    plt.savefig(output_path, dpi=300, bbox_inches='tight', facecolor='white', edgecolor='none')
+    print(f"  [OK] Saved to: {output_path}")
     plt.close()
     
     # Plot 3: Distribution sensitivity (6x2 layout)
-    fig, axes = plt.subplots(6, 2, figsize=(16, 24))
+    fig, axes = plt.subplots(6, 2, figsize=(18, 28))
     
     dist_colors = ['#d62728', '#1f77b4', '#2ca02c']
     
@@ -1281,18 +1334,19 @@ def plot_sensitivity_results(gamma_results, sigma_results, dist_results, output_
         # Left column: Curves
         ax_curve = axes[i, 0]
         ax_curve.plot(DAYS, SCENARIOS[scenario_key]['pt'], color=COLORS['True'],
-                     linestyle='-', linewidth=2.5, label='True')
+                     linestyle='-', linewidth=4, label='True', alpha=0.9)
         
         for j, (case_name, results) in enumerate(dist_results[scenario_key].items()):
             ax_curve.plot(DAYS, results['mean_estimate'], 
                          label=case_name,
-                         color=dist_colors[j], linestyle='--', linewidth=1.5)
+                         color=dist_colors[j], linestyle='--', linewidth=3, alpha=0.9)
         
-        ax_curve.set_xlabel('Days', fontsize=11)
-        ax_curve.set_ylabel('Fatality Rate', fontsize=11)
-        ax_curve.set_title(f"({scenario_key}) {SCENARIOS[scenario_key]['name']}", fontsize=12)
-        ax_curve.legend(fontsize=9, loc='best')
-        ax_curve.grid(True, alpha=0.3)
+        ax_curve.set_xlabel('Days', fontsize=14, fontweight='bold')
+        ax_curve.set_ylabel('Fatality Rate', fontsize=14, fontweight='bold')
+        ax_curve.set_title(f"({scenario_key}) {SCENARIOS[scenario_key]['name']}", fontsize=16, fontweight='bold')
+        ax_curve.legend(fontsize=12, loc='best', framealpha=0.9, edgecolor='black')
+        ax_curve.grid(True, alpha=0.5, linewidth=1.5)
+        ax_curve.tick_params(axis='both', which='major', labelsize=12, width=2, length=6)
         
         # Right column: MAE
         ax_mae = axes[i, 1]
@@ -1301,18 +1355,22 @@ def plot_sensitivity_results(gamma_results, sigma_results, dist_results, output_
         mae_stds = [r['mae_std'] for r in dist_results[scenario_key].values()]
         
         bars = ax_mae.bar(range(len(dist_names)), mae_means, yerr=mae_stds,
-                          capsize=5, alpha=0.7, color=dist_colors)
+                          capsize=8, alpha=0.8, color=dist_colors, edgecolor='black', linewidth=1.5)
         ax_mae.set_xticks(range(len(dist_names)))
-        ax_mae.set_xticklabels(dist_names, fontsize=10)
-        ax_mae.set_ylabel('Mean Absolute Error', fontsize=11)
-        ax_mae.set_title(f'MAE - {SCENARIOS[scenario_key]["name"]}', fontsize=12)
-        ax_mae.grid(True, alpha=0.3, axis='y')
+        ax_mae.set_xticklabels(dist_names, fontsize=12, fontweight='bold')
+        ax_mae.set_ylabel('Mean Absolute Error', fontsize=14, fontweight='bold')
+        ax_mae.set_title(f'MAE - {SCENARIOS[scenario_key]["name"]}', fontsize=16, fontweight='bold')
+        ax_mae.grid(True, alpha=0.5, axis='y', linewidth=1.5)
+        ax_mae.tick_params(axis='both', which='major', labelsize=12, width=2, length=6)
     
     plt.tight_layout()
     output_path = Path(output_dir) / 'sensitivity_distributions.pdf'
-    plt.savefig(output_path, dpi=300, bbox_inches='tight')
-    print(f"  ✅ Saved to: {output_path}")
+    plt.savefig(output_path, dpi=300, bbox_inches='tight', facecolor='white', edgecolor='none')
+    print(f"  [OK] Saved to: {output_path}")
     plt.close()
+    
+    # Reset rcParams to default
+    plt.rcParams.update(plt.rcParamsDefault)
     
     # Save comprehensive summary CSV
     summary_data = []
@@ -1345,14 +1403,26 @@ def plot_sensitivity_results(gamma_results, sigma_results, dist_results, output_
     df = pd.DataFrame(summary_data)
     csv_path = Path(output_dir) / 'sensitivity_analysis_summary.csv'
     df.to_csv(csv_path, index=False)
-    print(f"  ✅ Saved to: {csv_path}")
+    print(f"  [OK] Saved to: {csv_path}")
 
 def plot_mcmc_comparison(mcmc_results, output_dir):
-    """Plot MCMC vs ADVI comparison for all 6 scenarios with Pareto analysis."""
+    """Plot MCMC vs ADVI comparison for all scenarios with Pareto analysis."""
     print("\n  Generating MCMC comparison plots...")
     
+    # Set global font sizes for better publication quality
+    plt.rcParams.update({
+        'font.size': 16,           # Base font size
+        'axes.titlesize': 18,      # Title font size
+        'axes.labelsize': 16,      # Axis label font size
+        'xtick.labelsize': 14,     # X-axis tick font size
+        'ytick.labelsize': 14,     # Y-axis tick font size
+        'legend.fontsize': 14,     # Legend font size
+        'figure.titlesize': 20,    # Figure title font size
+        'lines.linewidth': 3,      # Default line width
+    })
+    
     scenarios = list(mcmc_results.keys())
-    fig, axes = plt.subplots(2, 2, figsize=(16, 12))
+    fig, axes = plt.subplots(2, 2, figsize=(18, 14))
     
     # Colors for consistency
     mcmc_color = '#1f77b4'
@@ -1369,81 +1439,88 @@ def plot_mcmc_comparison(mcmc_results, output_dir):
     advi_errs = [mcmc_results[s]['advi_runtime_std'] for s in scenarios]
     
     ax1.bar(x - width/2, mcmc_times, width, yerr=mcmc_errs, label='MCMC', 
-            alpha=0.8, capsize=5, color=mcmc_color)
+            alpha=0.8, capsize=8, color=mcmc_color, edgecolor='black', linewidth=1.5)
     ax1.bar(x + width/2, advi_times, width, yerr=advi_errs, label='ADVI', 
-            alpha=0.8, capsize=5, color=advi_color)
-    ax1.set_xlabel('Scenario', fontsize=12)
-    ax1.set_ylabel('Runtime (seconds)', fontsize=12)
-    ax1.set_title('(A) Runtime Comparison', fontsize=14)
+            alpha=0.8, capsize=8, color=advi_color, edgecolor='black', linewidth=1.5)
+    ax1.set_xlabel('Scenario', fontsize=16, fontweight='bold')
+    ax1.set_ylabel('Runtime (seconds)', fontsize=16, fontweight='bold')
+    ax1.set_title('(A) Runtime Comparison', fontsize=18, fontweight='bold')
     ax1.set_xticks(x)
-    ax1.set_xticklabels(scenarios, fontsize=11)
-    ax1.legend(fontsize=11)
-    ax1.grid(True, alpha=0.3, axis='y')
+    ax1.set_xticklabels(scenarios, fontsize=14, fontweight='bold')
+    ax1.legend(fontsize=14, framealpha=0.9, edgecolor='black')
+    ax1.grid(True, alpha=0.5, axis='y', linewidth=1.5)
+    ax1.tick_params(axis='both', which='major', labelsize=14, width=2, length=6)
     
     # Plot 2: Speedup (without text annotations)
     ax2 = axes[0, 1]
     speedups = [mcmc_results[s]['speedup'] for s in scenarios]
-    bars = ax2.bar(scenarios, speedups, alpha=0.8, color='#2ca02c')
-    ax2.axhline(y=1, color='r', linestyle='--', linewidth=2, label='No speedup')
-    ax2.set_xlabel('Scenario', fontsize=12)
-    ax2.set_ylabel('Speedup Factor', fontsize=12)
-    ax2.set_title('(B) ADVI Speedup', fontsize=14)
-    ax2.set_xticklabels(scenarios, fontsize=11)
-    ax2.legend(fontsize=11)
-    ax2.grid(True, alpha=0.3, axis='y')
+    bars = ax2.bar(scenarios, speedups, alpha=0.8, color='#2ca02c', edgecolor='black', linewidth=1.5)
+    ax2.axhline(y=1, color='r', linestyle='--', linewidth=3, label='No speedup')
+    ax2.set_xlabel('Scenario', fontsize=16, fontweight='bold')
+    ax2.set_ylabel('Speedup Factor', fontsize=16, fontweight='bold')
+    ax2.set_title('(B) ADVI Speedup', fontsize=18, fontweight='bold')
+    ax2.set_xticklabels(scenarios, fontsize=14, fontweight='bold')
+    ax2.legend(fontsize=14, framealpha=0.9, edgecolor='black')
+    ax2.grid(True, alpha=0.5, axis='y', linewidth=1.5)
+    ax2.tick_params(axis='both', which='major', labelsize=14, width=2, length=6)
     # Note: No text annotations as requested
     
     # Plot 3: MAE Comparison
     ax3 = axes[1, 0]
     mcmc_maes = [mcmc_results[s]['mcmc_mae_mean'] for s in scenarios]
     advi_maes = [mcmc_results[s]['advi_mae_mean'] for s in scenarios]
-    ax3.bar(x - width/2, mcmc_maes, width, label='MCMC', alpha=0.8, color=mcmc_color)
-    ax3.bar(x + width/2, advi_maes, width, label='ADVI', alpha=0.8, color=advi_color)
-    ax3.set_xlabel('Scenario', fontsize=12)
-    ax3.set_ylabel('Mean Absolute Error', fontsize=12)
-    ax3.set_title('(C) Accuracy Comparison', fontsize=14)
+    ax3.bar(x - width/2, mcmc_maes, width, label='MCMC', alpha=0.8, color=mcmc_color, edgecolor='black', linewidth=1.5)
+    ax3.bar(x + width/2, advi_maes, width, label='ADVI', alpha=0.8, color=advi_color, edgecolor='black', linewidth=1.5)
+    ax3.set_xlabel('Scenario', fontsize=16, fontweight='bold')
+    ax3.set_ylabel('Mean Absolute Error', fontsize=16, fontweight='bold')
+    ax3.set_title('(C) Accuracy Comparison', fontsize=18, fontweight='bold')
     ax3.set_xticks(x)
-    ax3.set_xticklabels(scenarios, fontsize=11)
-    ax3.legend(fontsize=11)
-    ax3.grid(True, alpha=0.3, axis='y')
+    ax3.set_xticklabels(scenarios, fontsize=14, fontweight='bold')
+    ax3.legend(fontsize=14, framealpha=0.9, edgecolor='black')
+    ax3.grid(True, alpha=0.5, axis='y', linewidth=1.5)
+    ax3.tick_params(axis='both', which='major', labelsize=14, width=2, length=6)
     
     # Plot 4: Pareto Analysis (Time vs Accuracy)
     ax4 = axes[1, 1]
     
     # Plot MCMC points
-    ax4.scatter(mcmc_times, mcmc_maes, s=150, alpha=0.7, color=mcmc_color, 
-               marker='o', label='MCMC', edgecolors='black', linewidths=1.5)
+    ax4.scatter(mcmc_times, mcmc_maes, s=200, alpha=0.8, color=mcmc_color, 
+               marker='o', label='MCMC', edgecolors='black', linewidths=2)
     
     # Plot ADVI points
-    ax4.scatter(advi_times, advi_maes, s=150, alpha=0.7, color=advi_color,
-               marker='s', label='ADVI', edgecolors='black', linewidths=1.5)
+    ax4.scatter(advi_times, advi_maes, s=200, alpha=0.8, color=advi_color,
+               marker='s', label='ADVI', edgecolors='black', linewidths=2)
     
     # Add scenario labels
     for i, scenario in enumerate(scenarios):
         ax4.annotate(scenario, (mcmc_times[i], mcmc_maes[i]), 
-                    xytext=(5, 5), textcoords='offset points', fontsize=9)
+                    xytext=(5, 5), textcoords='offset points', fontsize=12, fontweight='bold')
         ax4.annotate(scenario, (advi_times[i], advi_maes[i]),
-                    xytext=(5, -10), textcoords='offset points', fontsize=9)
+                    xytext=(5, -10), textcoords='offset points', fontsize=12, fontweight='bold')
     
     # Add ideal direction arrow
     ax4.annotate('', xy=(0.05, 0.05), xytext=(0.95, 0.95),
                 xycoords='axes fraction',
-                arrowprops=dict(arrowstyle='->', lw=2, color='gray', alpha=0.5))
+                arrowprops=dict(arrowstyle='->', lw=3, color='gray', alpha=0.7))
     ax4.text(0.1, 0.9, 'Better\n(Lower time, Lower MAE)', 
-            transform=ax4.transAxes, fontsize=10, color='gray',
-            bbox=dict(boxstyle='round', facecolor='white', alpha=0.7))
+            transform=ax4.transAxes, fontsize=12, color='gray', fontweight='bold',
+            bbox=dict(boxstyle='round', facecolor='white', alpha=0.8, edgecolor='black', linewidth=1))
     
-    ax4.set_xlabel('Runtime (seconds)', fontsize=12)
-    ax4.set_ylabel('Mean Absolute Error', fontsize=12)
-    ax4.set_title('(D) Pareto Analysis: Time vs Accuracy', fontsize=14)
-    ax4.legend(fontsize=11, loc='upper right')
-    ax4.grid(True, alpha=0.3)
+    ax4.set_xlabel('Runtime (seconds)', fontsize=16, fontweight='bold')
+    ax4.set_ylabel('Mean Absolute Error', fontsize=16, fontweight='bold')
+    ax4.set_title('(D) Pareto Analysis: Time vs Accuracy', fontsize=18, fontweight='bold')
+    ax4.legend(fontsize=14, loc='upper right', framealpha=0.9, edgecolor='black')
+    ax4.grid(True, alpha=0.5, linewidth=1.5)
+    ax4.tick_params(axis='both', which='major', labelsize=14, width=2, length=6)
     
     plt.tight_layout()
     output_path = Path(output_dir) / 'mcmc_vs_advi_comparison.pdf'
-    plt.savefig(output_path, dpi=300, bbox_inches='tight')
-    print(f"  ✅ Saved to: {output_path}")
+    plt.savefig(output_path, dpi=300, bbox_inches='tight', facecolor='white', edgecolor='none')
+    print(f"  [OK] Saved to: {output_path}")
     plt.close()
+    
+    # Reset rcParams to default
+    plt.rcParams.update(plt.rcParamsDefault)
     
     # Save comprehensive CSV
     comparison_data = []
@@ -1465,7 +1542,236 @@ def plot_mcmc_comparison(mcmc_results, output_dir):
     df = pd.DataFrame(comparison_data)
     csv_path = Path(output_dir) / 'mcmc_vs_advi_comparison.csv'
     df.to_csv(csv_path, index=False)
-    print(f"  ✅ Saved to: {csv_path}")
+    print(f"  [OK] Saved to: {csv_path}")
+
+def plot_elbo_traces(main_results, output_dir):
+    """Generate 2x3 ELBO trace plots optimized for A4 print quality."""
+    print("\n  Generating ELBO trace plots...")
+    
+    # Optimized for A4 print quality
+    plt.rcParams.update({
+        'font.size': 18,           # Base font size (increased)
+        'axes.titlesize': 22,      # Title font size
+        'axes.labelsize': 20,      # Axis label font size
+        'xtick.labelsize': 16,     # X-axis tick font size (increased)
+        'ytick.labelsize': 16,     # Y-axis tick font size (increased)
+        'legend.fontsize': 16,     # Legend font size (increased)
+        'figure.titlesize': 24,    # Figure title font size
+        'lines.linewidth': 4,      # Thicker lines
+        'axes.linewidth': 1.5,     # Thicker axis borders
+        'grid.linewidth': 1.2,     # Thicker grid lines
+        'xtick.major.width': 2,    # Thicker tick marks
+        'ytick.major.width': 2,
+        'xtick.major.size': 8,     # Longer tick marks
+        'ytick.major.size': 8,
+    })
+    
+    fig, axes = plt.subplots(2, 3, figsize=(22, 14))  # Larger figure
+    scenarios = list(main_results.keys())
+    
+    for i, scenario in enumerate(scenarios):
+        row = i // 3
+        col = i % 3
+        ax = axes[row, col]
+        
+        # Get scenario data
+        scenario_data = main_results[scenario]
+        runtime_mean = scenario_data['runtime_mean']
+        elbo_traces = scenario_data.get('elbo_traces', [])
+        
+        # Use the first available ELBO trace (from first replication)
+        if elbo_traces and len(elbo_traces) > 0:
+            elbo_trace = np.array(elbo_traces[0])
+            
+            # Subsample for efficiency (every 10th point)
+            step = 10
+            elbo_trace = elbo_trace[::step]
+            iterations = np.arange(1, len(elbo_trace) * step + 1, step)
+            
+            # Rolling mean and std (window = 200 iterations)
+            window = min(200, len(elbo_trace) // 5)
+            rolling_mean = pd.Series(elbo_trace).rolling(window=window, center=True).mean()
+            rolling_std = pd.Series(elbo_trace).rolling(window=window, center=True).std()
+            
+            # Plot ELBO trace with thicker lines
+            ax.plot(iterations, elbo_trace, alpha=0.25, color='lightblue', linewidth=1.5)
+            
+            # Plot rolling mean and bands
+            ax.plot(iterations, rolling_mean, color='blue', linewidth=4, label='Rolling Mean')
+            ax.fill_between(iterations, 
+                           rolling_mean - rolling_std, 
+                           rolling_mean + rolling_std, 
+                           alpha=0.25, color='blue', label='±1 SD')
+            
+            # Add horizontal line for convergence threshold (only if final_elbo is not NaN)
+            final_elbo = rolling_mean.iloc[-1]
+            if not np.isnan(final_elbo):
+                ax.axhline(y=final_elbo, color='red', linestyle='--', linewidth=3, 
+                          label=f'Final ELBO: {final_elbo:.1f}')
+        else:
+            # Fallback: No ELBO trace available
+            ax.text(0.5, 0.5, 'ELBO trace not available', 
+                   transform=ax.transAxes, fontsize=18, ha='center', va='center')
+        
+        # Add runtime annotation with larger font
+        ax.text(0.02, 0.98, f'Runtime: {runtime_mean:.1f}s', 
+               transform=ax.transAxes, fontsize=16, fontweight='bold',
+               verticalalignment='top',
+               bbox=dict(boxstyle='round', facecolor='white', alpha=0.9, 
+                        edgecolor='black', linewidth=1.5))
+        
+        # Format y-axis with scientific notation in label only
+        if elbo_traces and len(elbo_traces) > 0:
+            # Get the data range to determine if scientific notation is needed
+            elbo_trace = np.array(elbo_traces[0])
+            data_min, data_max = np.min(elbo_trace), np.max(elbo_trace)
+            
+            # Determine the appropriate scientific notation exponent
+            if abs(data_max) > 1000:  # Only apply for large numbers
+                exponent = int(np.floor(np.log10(abs(data_max))))
+                # Update y-axis label to indicate scaling
+                ax.set_ylabel(f'ELBO (×10$^{{{exponent}}}$)', fontsize=20, fontweight='bold', labelpad=10)
+            else:
+                ax.set_ylabel('ELBO', fontsize=20, fontweight='bold', labelpad=10)
+        else:
+            ax.set_ylabel('ELBO', fontsize=20, fontweight='bold', labelpad=10)
+        
+        # Formatting
+        ax.set_xlabel('ADVI Iterations', fontsize=20, fontweight='bold', labelpad=10)
+        ax.set_title(f'Scenario {scenario}: {SCENARIOS[scenario]["name"]}', 
+                    fontsize=22, fontweight='bold', pad=12)
+        ax.grid(True, alpha=0.5, linewidth=1.2)
+        
+        if i == 0:  # Only show legend on first subplot
+            ax.legend(loc='upper right', fontsize=14, framealpha=0.95, edgecolor='black', 
+                     frameon=True, bbox_to_anchor=(1.0, 1.0))
+    
+    plt.tight_layout(pad=1.0)
+    output_path = Path(output_dir) / 'elbo_traces.pdf'
+    plt.savefig(output_path, dpi=300, bbox_inches='tight', facecolor='white', edgecolor='none')
+    print(f"  [OK] Saved to: {output_path}")
+    plt.close()
+    
+    # Reset rcParams to default
+    plt.rcParams.update(plt.rcParamsDefault)
+
+def plot_mae_and_ppc(main_results, output_dir):
+    """Generate 6x2 plots: MAE boxplots and PPC p-value boxplots, optimized for A4 print."""
+    print("\n  Generating MAE and PPC plots...")
+    
+    # Optimized for A4 print quality
+    plt.rcParams.update({
+        'font.size': 18,           # Base font size (increased)
+        'axes.titlesize': 22,      # Title font size
+        'axes.labelsize': 20,      # Axis label font size
+        'xtick.labelsize': 16,     # X-axis tick font size (increased)
+        'ytick.labelsize': 16,     # Y-axis tick font size (increased)
+        'legend.fontsize': 16,     # Legend font size (increased)
+        'figure.titlesize': 24,    # Figure title font size
+        'lines.linewidth': 4,      # Thicker lines
+        'axes.linewidth': 1.5,     # Thicker axis borders
+        'grid.linewidth': 1.2,     # Thicker grid lines
+        'xtick.major.width': 2,    # Thicker tick marks
+        'ytick.major.width': 2,
+        'xtick.major.size': 8,     # Longer tick marks
+        'ytick.major.size': 8,
+    })
+    
+    fig, axes = plt.subplots(6, 2, figsize=(20, 32))
+    scenarios = list(main_results.keys())
+    
+    # Define colors consistent with simulation.pdf
+    colors = {
+        'BrtaCFR': '#1f77b4',  # Blue
+        'cCFR': '#ff7f0e',     # Orange  
+        'mCFR': '#2ca02c'      # Green
+    }
+    
+    for i, scenario in enumerate(scenarios):
+        scenario_data = main_results[scenario]
+        
+        # Left column: MAE comparison as boxplots
+        ax_mae = axes[i, 0]
+        
+        # Prepare data for boxplot (all replications)
+        mae_data = [
+            scenario_data['mae_values'],        # BrtaCFR
+            scenario_data['cCFR_mae_values'],   # cCFR
+            scenario_data['mCFR_mae_values']    # mCFR
+        ]
+        
+        # Create boxplot with thicker lines for print
+        bp = ax_mae.boxplot(mae_data, labels=['BrtaCFR', 'cCFR', 'mCFR'],
+                           patch_artist=True, widths=0.6,
+                           boxprops=dict(linewidth=2.5),
+                           medianprops=dict(linewidth=4, color='red'),
+                           whiskerprops=dict(linewidth=2.5),
+                           capprops=dict(linewidth=2.5),
+                           flierprops=dict(markersize=8))  # Larger outlier markers
+        
+        # Color the boxes
+        for patch, method in zip(bp['boxes'], ['BrtaCFR', 'cCFR', 'mCFR']):
+            patch.set_facecolor(colors[method])
+            patch.set_alpha(0.7)
+        
+        ax_mae.set_xlabel('Method', fontsize=20, fontweight='bold', labelpad=10)
+        ax_mae.set_ylabel('MAE', fontsize=20, fontweight='bold', labelpad=10)
+        ax_mae.set_title(f'Scenario {scenario}: {SCENARIOS[scenario]["name"]}', 
+                        fontsize=22, fontweight='bold', pad=12)
+        ax_mae.grid(True, alpha=0.5, axis='y', linewidth=1.2)
+        
+        # Right column: PPC Bayesian p-values at quantiles (one-sided)
+        ax_ppc = axes[i, 1]
+        
+        # Get pre-calculated p-values from all replications
+        pvalue_q25_values = scenario_data.get('pvalue_q25_values', [])
+        pvalue_q50_values = scenario_data.get('pvalue_q50_values', [])
+        pvalue_q75_values = scenario_data.get('pvalue_q75_values', [])
+        
+        if pvalue_q25_values and pvalue_q50_values and pvalue_q75_values:
+            # Create boxplot for p-values with thicker lines
+            pvalue_data = [pvalue_q25_values, pvalue_q50_values, pvalue_q75_values]
+            
+            bp_ppc = ax_ppc.boxplot(pvalue_data, labels=['Q25', 'Q50', 'Q75'],
+                                   patch_artist=True, widths=0.6,
+                                   boxprops=dict(linewidth=2.5),
+                                   medianprops=dict(linewidth=4, color='red'),
+                                   whiskerprops=dict(linewidth=2.5),
+                                   capprops=dict(linewidth=2.5),
+                                   flierprops=dict(markersize=8))
+            
+            # Color the boxes
+            box_colors = ['#8dd3c7', '#ffffb3', '#bebada']
+            for patch, color in zip(bp_ppc['boxes'], box_colors):
+                patch.set_facecolor(color)
+                patch.set_alpha(0.7)
+            
+            # Add reference line at p = 0.5 with thicker line
+            ax_ppc.axhline(y=0.5, color='red', linestyle='--', linewidth=3, 
+                          label='p = 0.5 (reference)')
+            
+            ax_ppc.set_ylim(0, 1)
+            ax_ppc.legend(loc='upper right', fontsize=14, framealpha=0.95, edgecolor='black', 
+                         frameon=True, bbox_to_anchor=(1.0, 1.0))
+        else:
+            ax_ppc.text(0.5, 0.5, 'PPC data not available', 
+                       transform=ax_ppc.transAxes, fontsize=18, ha='center', va='center')
+        
+        ax_ppc.set_xlabel('Quantile', fontsize=20, fontweight='bold', labelpad=10)
+        ax_ppc.set_ylabel('Bayesian p-value', fontsize=20, fontweight='bold', labelpad=10)
+        ax_ppc.set_title(f'Scenario {scenario}: PPC p-values', 
+                        fontsize=22, fontweight='bold', pad=12)
+        ax_ppc.grid(True, alpha=0.5, axis='y', linewidth=1.2)
+    
+    plt.tight_layout(pad=1.0)
+    output_path = Path(output_dir) / 'mae_and_ppc.pdf'
+    plt.savefig(output_path, dpi=300, bbox_inches='tight', facecolor='white', edgecolor='none')
+    print(f"  [OK] Saved to: {output_path}")
+    plt.close()
+    
+    # Reset rcParams to default
+    plt.rcParams.update(plt.rcParamsDefault)
+
 
 # =============================================================================
 # Main Execution
@@ -1503,7 +1809,7 @@ def main():
     checkpoint_mgr = CheckpointManager(checkpoint_dir)
     
     if args.clear_checkpoints:
-        print("🗑️  Clearing all checkpoints...")
+        print("[INFO] Clearing all checkpoints...")
         checkpoint_mgr.clear()
     
     print("="*80)
@@ -1520,33 +1826,35 @@ def main():
     
     # Run analyses (checkpoints are automatically used, no need for --resume flag)
     if args.only in ['main', 'all']:
-        print("\n" + "🔬"*40)
+        print("\n" + "="*40)
         print("PHASE 1: MAIN ANALYSIS & SIMULATION TABLE")
-        print("🔬"*40)
+        print("="*40)
         main_results = run_main_analysis(config, checkpoint_mgr, resume=True)
         plot_main_analysis(main_results, output_dir)
+        plot_elbo_traces(main_results, output_dir)
+        plot_mae_and_ppc(main_results, output_dir)
         simulation_table = generate_simulation_table(main_results, output_dir)
     
     if args.only in ['sensitivity', 'all']:
-        print("\n" + "🔬"*40)
+        print("\n" + "="*40)
         print("PHASE 2: SENSITIVITY ANALYSIS")
-        print("🔬"*40)
+        print("="*40)
         gamma_results = run_sensitivity_gamma(config, checkpoint_mgr, resume=True)
         sigma_results = run_sensitivity_sigma(config, checkpoint_mgr, resume=True)
         dist_results = run_sensitivity_distribution(config, checkpoint_mgr, resume=True)
         plot_sensitivity_results(gamma_results, sigma_results, dist_results, output_dir)
     
     if args.only in ['mcmc', 'all']:
-        print("\n" + "🔬"*40)
+        print("\n" + "="*40)
         print("PHASE 3: MCMC VS ADVI COMPARISON")
-        print("🔬"*40)
+        print("="*40)
         mcmc_results = run_mcmc_comparison(config, checkpoint_mgr, resume=True)
         plot_mcmc_comparison(mcmc_results, output_dir)
     
     total_time = time.time() - start_time
     
     print("\n" + "="*80)
-    print("🎉 ALL ANALYSES COMPLETE! 🎉")
+    print("ALL ANALYSES COMPLETE!")
     print("="*80)
     print(f"Total runtime: {total_time/60:.1f} minutes ({total_time/3600:.1f} hours)")
     print(f"Outputs saved to: {output_dir}")
@@ -1556,7 +1864,7 @@ def main():
     output_path = Path(output_dir)
     for f in sorted(output_path.glob("*")):
         size = f.stat().st_size / 1024  # KB
-        print(f"  ✅ {f.name} ({size:.1f} KB)")
+        print(f"  [OK] {f.name} ({size:.1f} KB)")
     
     print("\n" + "="*80)
     print("Next steps:")
@@ -1570,11 +1878,11 @@ if __name__ == '__main__':
     try:
         main()
     except KeyboardInterrupt:
-        print("\n\n⚠️  Analysis interrupted by user.")
+        print("\n\n[WARNING] Analysis interrupted by user.")
         print("Partial results saved in checkpoints. Use --resume to continue.")
         sys.exit(1)
     except Exception as e:
-        print(f"\n\n❌ Error: {e}")
+        print(f"\n\n[ERROR] {e}")
         import traceback
         traceback.print_exc()
         sys.exit(1)
