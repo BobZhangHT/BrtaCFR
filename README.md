@@ -31,13 +31,6 @@ cd BrtaCFR
 pip install -r requirements.txt
 ```
 
-### Verification
-
-```bash
-# Run a quick test to verify installation
-python run_all_simulations.py --demo
-```
-
 ## Quick Start
 
 ### Demo Mode (Recommended for first-time users)
@@ -203,14 +196,6 @@ The framework handles six comprehensive epidemic scenarios representing diverse 
 - **Decay**: Monotonic decreasing CFR over time
 - **Peak**: CFR peaks at intermediate time point then decreases
 - **Valley**: CFR decreases initially then increases (U-shaped pattern)
-
-## Performance
-
-- **Speed**: ADVI provides ~20x faster inference than MCMC with comparable accuracy
-- **Accuracy**: Validated against MCMC with comprehensive convergence diagnostics
-- **Scalability**: Efficiently handles real-time data streams and large-scale simulations
-- **Memory Efficiency**: Optimized parallel processing with checkpointing for large-scale analyses
-- **Real-world Validation**: Successfully applied to COVID-19 data from multiple countries
 
 ## Citation
 
