@@ -95,8 +95,8 @@ def logit_mae(pred, true):
 DEFAULT_CONFIG = {
     'main_reps': 1000,           # Main analysis replications
     'sensitivity_reps': 100,      # Sensitivity analysis replications
-    'mcmc_reps': 100,              # MCMC comparison replications
-    'n_jobs': -1,                 # Parallel jobs (-1 = all cores)
+    'mcmc_reps': 10,              # MCMC comparison replications
+    'n_jobs': 16,                  # Limit parallel jobs to prevent memory issues
     'checkpoint_dir': './checkpoints',
     'output_dir': './outputs',
 }
@@ -106,7 +106,7 @@ DEMO_CONFIG = {
     'main_reps': 2,
     'sensitivity_reps': 2,
     'mcmc_reps': 2,
-    'n_jobs': -1,
+    'n_jobs': 4,  # Limit parallel jobs to prevent memory issues
     'checkpoint_dir': './checkpoints_demo',
     'output_dir': './outputs_demo',
 }
@@ -128,6 +128,40 @@ SCENARIOS = {
 # Delay distribution parameters
 TRUE_GAMMA_MEAN = 15.43
 TRUE_GAMMA_SHAPE = 2.03
+
+# =============================================================================
+# Calculate True μ_t for each scenario (for PPC visualization)
+# =============================================================================
+
+def calculate_true_mu_t(scenario_key):
+    """
+    Calculate true μ_t (expected deaths) using true CFR and true delay distribution.
+    μ_t = Σ_{k=0}^{t-1} f_k * c_{t-k} * p_{t-k}
+    where:
+        - c_t: cumulative cases at time t
+        - p_t: true CFR at time t
+        - f_k: delay distribution PMF
+    """
+    pt_true = SCENARIOS[scenario_key]['pt']
+    mean_delay, shape_delay = TRUE_GAMMA_MEAN, TRUE_GAMMA_SHAPE
+    scale_delay = mean_delay / shape_delay
+    
+    # Calculate delay distribution PMF
+    F_k = gamma.cdf(np.arange(T_PERIOD + 1), a=shape_delay, scale=scale_delay)
+    f_k = np.diff(F_k)
+    
+    # Calculate true deaths without delay
+    true_deaths_no_delay = CT * pt_true
+    
+    # Apply delay distribution to get true μ_t
+    mu_t_true = np.array([np.sum(np.flip(f_k[:i]) * true_deaths_no_delay[:i]) 
+                          for i in np.arange(1, T_PERIOD + 1)])
+    
+    return mu_t_true
+
+# Pre-calculate true μ_t for all scenarios
+TRUE_MU_T = {scenario_key: calculate_true_mu_t(scenario_key) 
+             for scenario_key in SCENARIOS.keys()}
 
 # Sensitivity cases
 GAMMA_SENSITIVITY = {
@@ -350,23 +384,21 @@ def run_main_analysis_single(data, include_diagnostics=True):
         mCFR_mae = logit_mae(mCFR, pt_true)
         coverage = np.mean((pt_true >= brta_results['lower']) & (pt_true <= brta_results['upper']))
         
-        # Return only summary statistics (p-values already calculated in run_brtacfr_with_diagnostics)
+        # Return only summary statistics (mu_t_quantiles for PPC visualization)
         return {
             'cCFR': cCFR,
             'mCFR': mCFR,
             'BrtaCFR_mean': brta_results['mean'],
             'BrtaCFR_lower': brta_results['lower'],
             'BrtaCFR_upper': brta_results['upper'],
-            # Diagnostic data (scalars only)
+            # Diagnostic data
             'runtime': runtime,
             'mae': brta_mae,
             'cCFR_mae': cCFR_mae,
             'mCFR_mae': mCFR_mae,
             'coverage': coverage,
             'elbo_trace': brta_results['elbo_trace'],
-            'pvalue_q25': brta_results['pvalue_q25'],
-            'pvalue_q50': brta_results['pvalue_q50'],
-            'pvalue_q75': brta_results['pvalue_q75'],
+            'mu_t_quantiles': brta_results['mu_t_quantiles'],
         }
     else:
         brta_results = BrtaCFR_estimator(CT, dt, (TRUE_GAMMA_MEAN, TRUE_GAMMA_SHAPE))
@@ -379,7 +411,10 @@ def run_main_analysis_single(data, include_diagnostics=True):
         }
 
 def run_brtacfr_with_diagnostics(c_t, d_t, F_paras):
-    """BrtaCFR with diagnostics: calculate p-values at quantiles directly to save memory."""
+    """BrtaCFR with diagnostics: calculate μ_t quantiles for PPC functional ribbon visualization."""
+    import time
+    start_time = time.time()
+    
     T = len(c_t)
     mean_delay, shape_delay = F_paras
     scale_delay = mean_delay / shape_delay
@@ -435,46 +470,38 @@ def run_brtacfr_with_diagnostics(c_t, d_t, F_paras):
         if not np.all(np.isfinite(BrtaCFR_est)):
             raise ValueError("NaN in posterior estimates")
         
-        # Calculate Bayesian p-values at quantiles (one-sided) to save memory
-        quantiles = [0.25, 0.50, 0.75]
-        pvalues = {}
+        # Return μ_t posterior quantiles for PPC functional ribbon visualization
+        # Calculate 80% quantile band and 90% quantile band
+        mu_t_quantiles = {
+            'q10': np.quantile(mu_samples, 0.10, axis=0),  # Lower bound of 80% band
+            'q90': np.quantile(mu_samples, 0.90, axis=0),  # Upper bound of 80% band
+            'q05': np.quantile(mu_samples, 0.05, axis=0),  # Lower bound of 90% band
+            'q95': np.quantile(mu_samples, 0.95, axis=0),  # Upper bound of 90% band
+            'median': np.median(mu_samples, axis=0),       # Median trajectory
+        }
         
-        # Generate posterior predictive samples
-        pred_deaths_samples = np.random.poisson(mu_samples)
-        
-        for q in quantiles:
-            # Compute quantile statistic for observed data
-            obs_quantile = np.quantile(d_t, q)
-            
-            # Compute quantile statistics for predicted samples
-            pred_quantiles = np.array([np.quantile(pred_deaths_samples[i, :], q) 
-                                      for i in range(len(pred_deaths_samples))])
-            
-            # One-sided Bayesian p-value (as per formula in image)
-            pvalue = np.mean(pred_quantiles >= obs_quantile)
-            pvalues[f'pvalue_q{int(q*100)}'] = pvalue
+        runtime = time.time() - start_time
         
         return {
             'mean': BrtaCFR_est,
             'lower': CrI[0, :],
             'upper': CrI[1, :],
             'elbo_trace': elbo_trace,
-            'pvalue_q25': pvalues['pvalue_q25'],
-            'pvalue_q50': pvalues['pvalue_q50'],
-            'pvalue_q75': pvalues['pvalue_q75'],
+            'mu_t_quantiles': mu_t_quantiles,
+            'runtime': runtime,
         }
     
     except Exception as e:
         warnings.warn(f"ADVI optimization failed: {str(e)}. Using mCFR fallback.")
         mCFR_result = mCFR_EST(c_t, d_t, f_k)
+        runtime = time.time() - start_time
         return {
             'mean': mCFR_result,
             'lower': mCFR_result * 0.5,
             'upper': mCFR_result * 1.5,
             'elbo_trace': None,
-            'pvalue_q25': None,
-            'pvalue_q50': None,
-            'pvalue_q75': None,
+            'mu_t_quantiles': None,
+            'runtime': runtime,
         }
 
 
@@ -513,13 +540,14 @@ def run_main_analysis(config, checkpoint_mgr, resume=False):
         else:
             print(f"    [RUNNING] Running {len(pending)} pending replications...")
             
-            # Generate data for pending replications only
+            # Pre-generate all data to avoid repeated generation in parallel
+            print(f"    [INFO] Pre-generating data for {len(pending)} replications...")
             pending_data = []
             for rep_idx in pending:
                 data = generate_simulation_data(scenario_key, rep_idx, seed_offset=0)
                 pending_data.append((rep_idx, data))
             
-            # Run analysis on pending replications in parallel
+            # Run analysis on pending replications in parallel with optimized settings
             def run_and_save_replication(rep_idx_data):
                 rep_idx, data = rep_idx_data
                 result = run_main_analysis_single(data, include_diagnostics=True)
@@ -550,9 +578,7 @@ def run_main_analysis(config, checkpoint_mgr, resume=False):
             'mCFR_mae_values': [r['mCFR_mae'] for r in results],
             'coverage_values': [r['coverage'] for r in results],
             'elbo_traces': [r['elbo_trace'] for r in results if r['elbo_trace'] is not None],
-            'pvalue_q25_values': [r['pvalue_q25'] for r in results if r['pvalue_q25'] is not None],
-            'pvalue_q50_values': [r['pvalue_q50'] for r in results if r['pvalue_q50'] is not None],
-            'pvalue_q75_values': [r['pvalue_q75'] for r in results if r['pvalue_q75'] is not None],
+            'mu_t_quantiles_list': [r['mu_t_quantiles'] for r in results if r['mu_t_quantiles'] is not None],
         }
     
     # Save final aggregated results
@@ -587,12 +613,6 @@ def generate_simulation_table(main_results, output_dir):
             'mCFR_mae_std': np.std(results['mCFR_mae_values']),
             'coverage_mean': np.mean(results['coverage_values']),
             'coverage_std': np.std(results['coverage_values']),
-            'pvalue_q25_mean': np.mean(results['pvalue_q25_values']) if results['pvalue_q25_values'] else None,
-            'pvalue_q25_std': np.std(results['pvalue_q25_values']) if results['pvalue_q25_values'] else None,
-            'pvalue_q50_mean': np.mean(results['pvalue_q50_values']) if results['pvalue_q50_values'] else None,
-            'pvalue_q50_std': np.std(results['pvalue_q50_values']) if results['pvalue_q50_values'] else None,
-            'pvalue_q75_mean': np.mean(results['pvalue_q75_values']) if results['pvalue_q75_values'] else None,
-            'pvalue_q75_std': np.std(results['pvalue_q75_values']) if results['pvalue_q75_values'] else None,
         }
         table_data.append(row)
     
@@ -653,7 +673,9 @@ def run_sensitivity_gamma(config, checkpoint_mgr, resume=False):
                 F_paras = (case_params['mean'], case_params['shape'])
                 
                 def run_and_save_gamma_replication(rep_idx):
+                    # Reuse data generation to avoid duplicate computation
                     data = generate_simulation_data(scenario_key, rep_idx, seed_offset=10000)
+                    # Use faster estimator without diagnostics for sensitivity analysis
                     result = BrtaCFR_estimator(data['CT'], data['dt'], F_paras)
                     checkpoint_mgr.save_replication_result(analysis_name, scenario_key, rep_idx, result)
                     return result
@@ -1182,7 +1204,7 @@ def plot_main_analysis(main_results, output_dir):
         'ytick.major.size': 8,
     })
     
-    fig, axes = plt.subplots(2, 3, figsize=(26, 10))  # Flatter figure
+    fig, axes = plt.subplots(2, 3, figsize=(32, 16))  # Larger figure
     axes = axes.ravel()
     
     for i, (scenario_key, results) in enumerate(main_results.items()):
@@ -1255,7 +1277,8 @@ def plot_sensitivity_results(gamma_results, sigma_results, dist_results, output_
         ax_curve.set_xlabel('Days', fontsize=14, fontweight='bold')
         ax_curve.set_ylabel('Fatality Rate', fontsize=14, fontweight='bold')
         ax_curve.set_title(f"({scenario_key}) {SCENARIOS[scenario_key]['name']}", fontsize=16, fontweight='bold')
-        ax_curve.legend(fontsize=12, loc='best', framealpha=0.9, edgecolor='black')
+        if i == 0:  # Only show legend on first subplot
+            ax_curve.legend(fontsize=12, loc='best', framealpha=0.9, edgecolor='black')
         ax_curve.grid(True, alpha=0.5, linewidth=1.5)
         ax_curve.tick_params(axis='both', which='major', labelsize=12, width=2, length=6)
         
@@ -1300,7 +1323,8 @@ def plot_sensitivity_results(gamma_results, sigma_results, dist_results, output_
         ax_curve.set_xlabel('Days', fontsize=14, fontweight='bold')
         ax_curve.set_ylabel('Fatality Rate', fontsize=14, fontweight='bold')
         ax_curve.set_title(f"({scenario_key}) {SCENARIOS[scenario_key]['name']}", fontsize=16, fontweight='bold')
-        ax_curve.legend(fontsize=12, loc='best', framealpha=0.9, edgecolor='black')
+        if i == 0:  # Only show legend on first subplot
+            ax_curve.legend(fontsize=12, loc='best', framealpha=0.9, edgecolor='black')
         ax_curve.grid(True, alpha=0.5, linewidth=1.5)
         ax_curve.tick_params(axis='both', which='major', labelsize=12, width=2, length=6)
         
@@ -1344,7 +1368,8 @@ def plot_sensitivity_results(gamma_results, sigma_results, dist_results, output_
         ax_curve.set_xlabel('Days', fontsize=14, fontweight='bold')
         ax_curve.set_ylabel('Fatality Rate', fontsize=14, fontweight='bold')
         ax_curve.set_title(f"({scenario_key}) {SCENARIOS[scenario_key]['name']}", fontsize=16, fontweight='bold')
-        ax_curve.legend(fontsize=12, loc='best', framealpha=0.9, edgecolor='black')
+        if i == 0:  # Only show legend on first subplot
+            ax_curve.legend(fontsize=12, loc='best', framealpha=0.9, edgecolor='black')
         ax_curve.grid(True, alpha=0.5, linewidth=1.5)
         ax_curve.tick_params(axis='both', which='major', labelsize=12, width=2, length=6)
         
@@ -1583,6 +1608,10 @@ def plot_elbo_traces(main_results, output_dir):
         if elbo_traces and len(elbo_traces) > 0:
             elbo_trace = np.array(elbo_traces[0])
             
+            # Convert to Neg ELBO (ELBO opposite number) and scale by 10^5
+            elbo_trace = -elbo_trace  # Convert to Neg ELBO
+            elbo_trace = elbo_trace / 1e5  # Scale to 10^5 scientific notation
+            
             # Subsample for efficiency (every 10th point)
             step = 10
             elbo_trace = elbo_trace[::step]
@@ -1620,21 +1649,8 @@ def plot_elbo_traces(main_results, output_dir):
                bbox=dict(boxstyle='round', facecolor='white', alpha=0.9, 
                         edgecolor='black', linewidth=1.5))
         
-        # Format y-axis with scientific notation in label only
-        if elbo_traces and len(elbo_traces) > 0:
-            # Get the data range to determine if scientific notation is needed
-            elbo_trace = np.array(elbo_traces[0])
-            data_min, data_max = np.min(elbo_trace), np.max(elbo_trace)
-            
-            # Determine the appropriate scientific notation exponent
-            if abs(data_max) > 1000:  # Only apply for large numbers
-                exponent = int(np.floor(np.log10(abs(data_max))))
-                # Update y-axis label to indicate scaling
-                ax.set_ylabel(f'ELBO (×10$^{{{exponent}}}$)', fontsize=20, fontweight='bold', labelpad=10)
-            else:
-                ax.set_ylabel('ELBO', fontsize=20, fontweight='bold', labelpad=10)
-        else:
-            ax.set_ylabel('ELBO', fontsize=20, fontweight='bold', labelpad=10)
+        # Set y-axis label for Neg ELBO with fixed scientific notation
+        ax.set_ylabel('Neg ELBO (×10$^{{5}}$)', fontsize=20, fontweight='bold', labelpad=10)
         
         # Formatting
         ax.set_xlabel('ADVI Iterations', fontsize=20, fontweight='bold', labelpad=10)
@@ -1677,7 +1693,7 @@ def plot_mae_and_ppc(main_results, output_dir):
         'ytick.major.size': 8,
     })
     
-    fig, axes = plt.subplots(6, 2, figsize=(20, 32))
+    fig, axes = plt.subplots(6, 2, figsize=(18, 36))
     scenarios = list(main_results.keys())
     
     # Define colors consistent with simulation.pdf
@@ -1720,48 +1736,57 @@ def plot_mae_and_ppc(main_results, output_dir):
                         fontsize=22, fontweight='bold', pad=12)
         ax_mae.grid(True, alpha=0.5, axis='y', linewidth=1.2)
         
-        # Right column: PPC Bayesian p-values at quantiles (one-sided)
+        # Right column: PPC Functional Ribbon Visualization
         ax_ppc = axes[i, 1]
         
-        # Get pre-calculated p-values from all replications
-        pvalue_q25_values = scenario_data.get('pvalue_q25_values', [])
-        pvalue_q50_values = scenario_data.get('pvalue_q50_values', [])
-        pvalue_q75_values = scenario_data.get('pvalue_q75_values', [])
+        # Get μ_t quantiles from all replications
+        mu_t_quantiles_list = scenario_data.get('mu_t_quantiles_list', [])
         
-        if pvalue_q25_values and pvalue_q50_values and pvalue_q75_values:
-            # Create boxplot for p-values with thicker lines
-            pvalue_data = [pvalue_q25_values, pvalue_q50_values, pvalue_q75_values]
+        if mu_t_quantiles_list:
+            # Aggregate quantiles across replications to get median bands
+            # 深色带（80% band）：每个replication的80%预测带的中位数
+            inner_lower = np.median([q['q10'] for q in mu_t_quantiles_list], axis=0)
+            inner_upper = np.median([q['q90'] for q in mu_t_quantiles_list], axis=0)
             
-            bp_ppc = ax_ppc.boxplot(pvalue_data, labels=['Q25', 'Q50', 'Q75'],
-                                   patch_artist=True, widths=0.6,
-                                   boxprops=dict(linewidth=2.5),
-                                   medianprops=dict(linewidth=4, color='red'),
-                                   whiskerprops=dict(linewidth=2.5),
-                                   capprops=dict(linewidth=2.5),
-                                   flierprops=dict(markersize=8))
+            # 浅色带（90% band）：每个replication的90%预测带的5-95%分位区间
+            outer_lower = np.quantile([q['q05'] for q in mu_t_quantiles_list], 0.05, axis=0)
+            outer_upper = np.quantile([q['q95'] for q in mu_t_quantiles_list], 0.95, axis=0)
             
-            # Color the boxes
-            box_colors = ['#8dd3c7', '#ffffb3', '#bebada']
-            for patch, color in zip(bp_ppc['boxes'], box_colors):
-                patch.set_facecolor(color)
-                patch.set_alpha(0.7)
+            # 粗实线：每个replication后验预测均值曲线的功能中位数
+            median_curve = np.median([q['median'] for q in mu_t_quantiles_list], axis=0)
             
-            # Add reference line at p = 0.5 with thicker line
-            ax_ppc.axhline(y=0.5, color='red', linestyle='--', linewidth=3, 
-                          label='p = 0.5 (reference)')
+            # 黑线：真实μ_t（基于真实CFR和真实病例数）
+            true_mu_t = TRUE_MU_T[scenario]
             
-            ax_ppc.set_ylim(0, 1)
-            ax_ppc.legend(loc='upper right', fontsize=14, framealpha=0.95, edgecolor='black', 
-                         frameon=True, bbox_to_anchor=(1.0, 1.0))
+            # Plot functional ribbons with improved color contrast
+            # Outer band (5-95%): Represents the 5-95% prediction interval across replications
+            ax_ppc.fill_between(DAYS, outer_lower, outer_upper, 
+                               color='lightskyblue', alpha=0.6, label='5-95% band')
+            
+            # Inner band (80%): Represents the median 80% prediction interval from individual replications
+            ax_ppc.fill_between(DAYS, inner_lower, inner_upper, 
+                               color='steelblue', alpha=0.7, label='80% band')
+            
+            # Median prediction: Functional median of posterior predictive means across replications
+            ax_ppc.plot(DAYS, median_curve, color='red', linewidth=4, 
+                       label='Median prediction', alpha=0.9)
+            
+            # True μ_t: The actual expected deaths based on true CFR and cases
+            ax_ppc.plot(DAYS, true_mu_t, color='black', linewidth=4, 
+                       linestyle='-', label='True $\mu_t$', alpha=0.9)
+            
+            if i == 0:  # Only show legend on first row (Scenario A)
+                ax_ppc.legend(loc='lower right', fontsize=14, framealpha=0.95, edgecolor='black', 
+                             frameon=True, bbox_to_anchor=(1.0, 0.0))
         else:
             ax_ppc.text(0.5, 0.5, 'PPC data not available', 
                        transform=ax_ppc.transAxes, fontsize=18, ha='center', va='center')
         
-        ax_ppc.set_xlabel('Quantile', fontsize=20, fontweight='bold', labelpad=10)
-        ax_ppc.set_ylabel('Bayesian p-value', fontsize=20, fontweight='bold', labelpad=10)
-        ax_ppc.set_title(f'Scenario {scenario}: PPC p-values', 
+        ax_ppc.set_xlabel('Days', fontsize=20, fontweight='bold', labelpad=10)
+        ax_ppc.set_ylabel('Expected Deaths ($\mu_t$)', fontsize=20, fontweight='bold', labelpad=10)
+        ax_ppc.set_title(f'Scenario {scenario}: {SCENARIOS[scenario]["name"]}', 
                         fontsize=22, fontweight='bold', pad=12)
-        ax_ppc.grid(True, alpha=0.5, axis='y', linewidth=1.2)
+        ax_ppc.grid(True, alpha=0.5, linewidth=1.2)
     
     plt.tight_layout(pad=1.0)
     output_path = Path(output_dir) / 'mae_and_ppc.pdf'
