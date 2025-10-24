@@ -10,7 +10,7 @@ BrtaCFR is a comprehensive Bayesian framework for real-time estimation of case f
 - **Uncertainty Quantification**: Bayesian credible intervals for all estimates with comprehensive diagnostic validation
 - **Multiple Epidemic Patterns**: Handles diverse epidemic scenarios including constant, exponential growth, delayed growth, decay, peak, and valley patterns
 - **Comparative Benchmarking**: Systematic evaluation against conventional CFR (cCFR) and modified CFR (mCFR) methods
-- **Comprehensive Diagnostics**: ELBO trace monitoring, posterior predictive checks, and convergence diagnostics
+- **Comprehensive Diagnostics**: ELBO trace monitoring and posterior predictive checks
 - **Real-world Applications**: Validated on COVID-19 data from multiple countries with practical implementation examples
 
 ## Installation
@@ -183,7 +183,7 @@ BrtaCFR employs a sophisticated Bayesian hierarchical framework for modeling tim
 1. **Observation Model**: Deaths follow a Poisson distribution with rate parameter accounting for reporting delays
 2. **Process Model**: CFR evolves according to specified temporal patterns with appropriate prior distributions
 3. **Inference**: ADVI provides fast, approximate posterior sampling with convergence monitoring
-4. **Diagnostics**: Comprehensive ELBO monitoring, posterior predictive checks, and convergence diagnostics ensure reliable results
+4. **Diagnostics**: Comprehensive ELBO monitoring and posterior predictive checks
 5. **Validation**: Extensive sensitivity analysis and real-world data validation demonstrate method robustness
 
 ## Scenarios
