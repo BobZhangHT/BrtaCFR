@@ -1243,152 +1243,182 @@ def plot_main_analysis(main_results, output_dir):
     plt.rcParams.update(plt.rcParamsDefault)
 
 def plot_sensitivity_results(gamma_results, sigma_results, dist_results, output_dir):
-    """Plot all sensitivity analysis results with 6x2 layout for each analysis."""
+    """Plot all sensitivity analysis results with 3x4 layout for each analysis, optimized for A4 horizontal."""
     print("\n  Generating sensitivity plots...")
     
-    # Set global font sizes for better publication quality
+    # Set global font sizes for better publication quality - optimized for A4 horizontal
     plt.rcParams.update({
-        'font.size': 14,           # Base font size
-        'axes.titlesize': 16,      # Title font size
-        'axes.labelsize': 14,      # Axis label font size
-        'xtick.labelsize': 12,     # X-axis tick font size
-        'ytick.labelsize': 12,     # Y-axis tick font size
-        'legend.fontsize': 12,     # Legend font size
-        'figure.titlesize': 18,    # Figure title font size
-        'lines.linewidth': 3,      # Default line width
+        'font.size': 20,           # Base font size (increased for horizontal layout)
+        'axes.titlesize': 24,      # Title font size
+        'axes.labelsize': 22,      # Axis label font size
+        'xtick.labelsize': 18,     # X-axis tick font size
+        'ytick.labelsize': 18,     # Y-axis tick font size
+        'legend.fontsize': 16,     # Legend font size
+        'figure.titlesize': 26,    # Figure title font size
+        'lines.linewidth': 4,      # Thicker lines
+        'axes.linewidth': 2,       # Thicker axis borders
+        'grid.linewidth': 1.5,     # Thicker grid lines
+        'xtick.major.width': 2.5,  # Thicker tick marks
+        'ytick.major.width': 2.5,
+        'xtick.major.size': 10,    # Longer tick marks
+        'ytick.major.size': 10,
     })
     
-    # Plot 1: Gamma sensitivity (6x2 layout)
-    fig, axes = plt.subplots(6, 2, figsize=(18, 28))
+    # Plot 1: Gamma sensitivity (3x4 layout)
+    # Row 1: A_Curve, A_MAE, B_Curve, B_MAE
+    # Row 2: C_Curve, C_MAE, D_Curve, D_MAE
+    # Row 3: E_Curve, E_MAE, F_Curve, F_MAE
+    fig, axes = plt.subplots(3, 4, figsize=(28, 21))  # Optimized for A4 horizontal
     
     gamma_colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd']
     
     for i, scenario_key in enumerate(SCENARIOS.keys()):
-        # Left column: Curves
-        ax_curve = axes[i, 0]
+        # Map to 3x4 layout: row = i // 2, col_curve = (i % 2) * 2, col_mae = (i % 2) * 2 + 1
+        row = i // 2
+        col_curve = (i % 2) * 2
+        col_mae = (i % 2) * 2 + 1
+        
+        # Curves plot
+        ax_curve = axes[row, col_curve]
         ax_curve.plot(DAYS, SCENARIOS[scenario_key]['pt'], color=COLORS['True'], 
-                     linestyle='-', linewidth=4, label='True', alpha=0.9)
+                     linestyle='-', linewidth=5, label='True', alpha=0.9)
         
         for j, (case_name, results) in enumerate(gamma_results[scenario_key].items()):
             ax_curve.plot(DAYS, results['mean_estimate'], 
                          label=case_name.replace('_', ' '),
-                         color=gamma_colors[j], linestyle='--', linewidth=3, alpha=0.9)
+                         color=gamma_colors[j], linestyle='--', linewidth=4, alpha=0.9)
         
-        ax_curve.set_xlabel('Days', fontsize=14, fontweight='bold')
-        ax_curve.set_ylabel('Fatality Rate', fontsize=14, fontweight='bold')
-        ax_curve.set_title(f"({scenario_key}) {SCENARIOS[scenario_key]['name']}", fontsize=16, fontweight='bold')
+        ax_curve.set_xlabel('Days', fontsize=22, fontweight='bold', labelpad=12)
+        ax_curve.set_ylabel('Fatality Rate', fontsize=22, fontweight='bold', labelpad=12)
+        ax_curve.set_title(f"({scenario_key}) {SCENARIOS[scenario_key]['name']}", fontsize=24, fontweight='bold', pad=14)
         if i == 0:  # Only show legend on first subplot
-            ax_curve.legend(fontsize=12, loc='best', framealpha=0.9, edgecolor='black')
+            ax_curve.legend(fontsize=16, loc='best', framealpha=0.9, edgecolor='black')
         ax_curve.grid(True, alpha=0.5, linewidth=1.5)
-        ax_curve.tick_params(axis='both', which='major', labelsize=12, width=2, length=6)
+        ax_curve.tick_params(axis='both', which='major', labelsize=18, width=2.5, length=8)
         
-        # Right column: MAE
-        ax_mae = axes[i, 1]
+        # MAE plot
+        ax_mae = axes[row, col_mae]
         case_names = [n.replace('_', ' ') for n in gamma_results[scenario_key].keys()]
         mae_means = [r['mae_mean'] for r in gamma_results[scenario_key].values()]
         mae_stds = [r['mae_std'] for r in gamma_results[scenario_key].values()]
         
         bars = ax_mae.bar(range(len(case_names)), mae_means, yerr=mae_stds, 
-                          capsize=8, alpha=0.8, color=gamma_colors, edgecolor='black', linewidth=1.5)
+                          capsize=10, alpha=0.8, color=gamma_colors, edgecolor='black', linewidth=2)
         ax_mae.set_xticks(range(len(case_names)))
-        ax_mae.set_xticklabels(case_names, rotation=45, ha='right', fontsize=12, fontweight='bold')
-        ax_mae.set_ylabel('Mean Absolute Error', fontsize=14, fontweight='bold')
-        ax_mae.set_title(f'MAE - {SCENARIOS[scenario_key]["name"]}', fontsize=16, fontweight='bold')
+        ax_mae.set_xticklabels(case_names, rotation=45, ha='right', fontsize=18, fontweight='bold')
+        ax_mae.set_ylabel('Mean Absolute Error', fontsize=22, fontweight='bold', labelpad=12)
+        ax_mae.set_title(f'MAE - {SCENARIOS[scenario_key]["name"]}', fontsize=24, fontweight='bold', pad=14)
         ax_mae.grid(True, alpha=0.5, axis='y', linewidth=1.5)
-        ax_mae.tick_params(axis='both', which='major', labelsize=12, width=2, length=6)
+        ax_mae.tick_params(axis='both', which='major', labelsize=18, width=2.5, length=8)
     
-    plt.tight_layout()
+    plt.tight_layout(pad=1.5)
     output_path = Path(output_dir) / 'sensitivity_gamma.pdf'
     plt.savefig(output_path, dpi=300, bbox_inches='tight', facecolor='white', edgecolor='none')
     print(f"  [OK] Saved to: {output_path}")
     plt.close()
     
-    # Plot 2: Sigma sensitivity (6x2 layout)
-    fig, axes = plt.subplots(6, 2, figsize=(18, 28))
+    # Plot 2: Sigma sensitivity (3x4 layout)
+    # Row 1: A_Curve, A_MAE, B_Curve, B_MAE
+    # Row 2: C_Curve, C_MAE, D_Curve, D_MAE
+    # Row 3: E_Curve, E_MAE, F_Curve, F_MAE
+    fig, axes = plt.subplots(3, 4, figsize=(28, 21))  # Optimized for A4 horizontal
     
     sigma_colors = ['#7f007f', '#0000ff', '#00ff00', '#ffa500', '#ff0000']
     
     for i, scenario_key in enumerate(SCENARIOS.keys()):
-        # Left column: Curves
-        ax_curve = axes[i, 0]
+        # Map to 3x4 layout: row = i // 2, col_curve = (i % 2) * 2, col_mae = (i % 2) * 2 + 1
+        row = i // 2
+        col_curve = (i % 2) * 2
+        col_mae = (i % 2) * 2 + 1
+        
+        # Curves plot
+        ax_curve = axes[row, col_curve]
         ax_curve.plot(DAYS, SCENARIOS[scenario_key]['pt'], color=COLORS['True'],
-                     linestyle='-', linewidth=4, label='True', alpha=0.9)
+                     linestyle='-', linewidth=5, label='True', alpha=0.9)
         
         for j, (case_name, results) in enumerate(sigma_results[scenario_key].items()):
             sigma_val = SIGMA_SENSITIVITY[case_name]
             ax_curve.plot(DAYS, results['mean_estimate'], 
                          label=f"σ={sigma_val}",
-                         color=sigma_colors[j], linestyle='--', linewidth=3, alpha=0.9)
+                         color=sigma_colors[j], linestyle='--', linewidth=4, alpha=0.9)
         
-        ax_curve.set_xlabel('Days', fontsize=14, fontweight='bold')
-        ax_curve.set_ylabel('Fatality Rate', fontsize=14, fontweight='bold')
-        ax_curve.set_title(f"({scenario_key}) {SCENARIOS[scenario_key]['name']}", fontsize=16, fontweight='bold')
+        ax_curve.set_xlabel('Days', fontsize=22, fontweight='bold', labelpad=12)
+        ax_curve.set_ylabel('Fatality Rate', fontsize=22, fontweight='bold', labelpad=12)
+        ax_curve.set_title(f"({scenario_key}) {SCENARIOS[scenario_key]['name']}", fontsize=24, fontweight='bold', pad=14)
         if i == 0:  # Only show legend on first subplot
-            ax_curve.legend(fontsize=12, loc='best', framealpha=0.9, edgecolor='black')
+            ax_curve.legend(fontsize=16, loc='best', framealpha=0.9, edgecolor='black')
         ax_curve.grid(True, alpha=0.5, linewidth=1.5)
-        ax_curve.tick_params(axis='both', which='major', labelsize=12, width=2, length=6)
+        ax_curve.tick_params(axis='both', which='major', labelsize=18, width=2.5, length=8)
         
-        # Right column: MAE
-        ax_mae = axes[i, 1]
+        # MAE plot
+        ax_mae = axes[row, col_mae]
         sigma_labels = [f"σ={SIGMA_SENSITIVITY[n]}" for n in sigma_results[scenario_key].keys()]
         mae_means = [r['mae_mean'] for r in sigma_results[scenario_key].values()]
         mae_stds = [r['mae_std'] for r in sigma_results[scenario_key].values()]
         
         bars = ax_mae.bar(range(len(sigma_labels)), mae_means, yerr=mae_stds,
-                          capsize=8, alpha=0.8, color=sigma_colors, edgecolor='black', linewidth=1.5)
+                          capsize=10, alpha=0.8, color=sigma_colors, edgecolor='black', linewidth=2)
         ax_mae.set_xticks(range(len(sigma_labels)))
-        ax_mae.set_xticklabels(sigma_labels, fontsize=12, fontweight='bold')
-        ax_mae.set_ylabel('Mean Absolute Error', fontsize=14, fontweight='bold')
-        ax_mae.set_title(f'MAE - {SCENARIOS[scenario_key]["name"]}', fontsize=16, fontweight='bold')
+        ax_mae.set_xticklabels(sigma_labels, fontsize=18, fontweight='bold')
+        ax_mae.set_ylabel('Mean Absolute Error', fontsize=22, fontweight='bold', labelpad=12)
+        ax_mae.set_title(f'MAE - {SCENARIOS[scenario_key]["name"]}', fontsize=24, fontweight='bold', pad=14)
         ax_mae.grid(True, alpha=0.5, axis='y', linewidth=1.5)
-        ax_mae.tick_params(axis='both', which='major', labelsize=12, width=2, length=6)
+        ax_mae.tick_params(axis='both', which='major', labelsize=18, width=2.5, length=8)
     
-    plt.tight_layout()
+    plt.tight_layout(pad=1.5)
     output_path = Path(output_dir) / 'sensitivity_sigma.pdf'
     plt.savefig(output_path, dpi=300, bbox_inches='tight', facecolor='white', edgecolor='none')
     print(f"  [OK] Saved to: {output_path}")
     plt.close()
     
-    # Plot 3: Distribution sensitivity (6x2 layout)
-    fig, axes = plt.subplots(6, 2, figsize=(18, 28))
+    # Plot 3: Distribution sensitivity (3x4 layout)
+    # Row 1: A_Curve, A_MAE, B_Curve, B_MAE
+    # Row 2: C_Curve, C_MAE, D_Curve, D_MAE
+    # Row 3: E_Curve, E_MAE, F_Curve, F_MAE
+    fig, axes = plt.subplots(3, 4, figsize=(28, 21))  # Optimized for A4 horizontal
     
     dist_colors = ['#d62728', '#1f77b4', '#2ca02c']
     
     for i, scenario_key in enumerate(SCENARIOS.keys()):
-        # Left column: Curves
-        ax_curve = axes[i, 0]
+        # Map to 3x4 layout: row = i // 2, col_curve = (i % 2) * 2, col_mae = (i % 2) * 2 + 1
+        row = i // 2
+        col_curve = (i % 2) * 2
+        col_mae = (i % 2) * 2 + 1
+        
+        # Curves plot
+        ax_curve = axes[row, col_curve]
         ax_curve.plot(DAYS, SCENARIOS[scenario_key]['pt'], color=COLORS['True'],
-                     linestyle='-', linewidth=4, label='True', alpha=0.9)
+                     linestyle='-', linewidth=5, label='True', alpha=0.9)
         
         for j, (case_name, results) in enumerate(dist_results[scenario_key].items()):
             ax_curve.plot(DAYS, results['mean_estimate'], 
                          label=case_name,
-                         color=dist_colors[j], linestyle='--', linewidth=3, alpha=0.9)
+                         color=dist_colors[j], linestyle='--', linewidth=4, alpha=0.9)
         
-        ax_curve.set_xlabel('Days', fontsize=14, fontweight='bold')
-        ax_curve.set_ylabel('Fatality Rate', fontsize=14, fontweight='bold')
-        ax_curve.set_title(f"({scenario_key}) {SCENARIOS[scenario_key]['name']}", fontsize=16, fontweight='bold')
+        ax_curve.set_xlabel('Days', fontsize=22, fontweight='bold', labelpad=12)
+        ax_curve.set_ylabel('Fatality Rate', fontsize=22, fontweight='bold', labelpad=12)
+        ax_curve.set_title(f"({scenario_key}) {SCENARIOS[scenario_key]['name']}", fontsize=24, fontweight='bold', pad=14)
         if i == 0:  # Only show legend on first subplot
-            ax_curve.legend(fontsize=12, loc='best', framealpha=0.9, edgecolor='black')
+            ax_curve.legend(fontsize=16, loc='best', framealpha=0.9, edgecolor='black')
         ax_curve.grid(True, alpha=0.5, linewidth=1.5)
-        ax_curve.tick_params(axis='both', which='major', labelsize=12, width=2, length=6)
+        ax_curve.tick_params(axis='both', which='major', labelsize=18, width=2.5, length=8)
         
-        # Right column: MAE
-        ax_mae = axes[i, 1]
+        # MAE plot
+        ax_mae = axes[row, col_mae]
         dist_names = list(dist_results[scenario_key].keys())
         mae_means = [r['mae_mean'] for r in dist_results[scenario_key].values()]
         mae_stds = [r['mae_std'] for r in dist_results[scenario_key].values()]
         
         bars = ax_mae.bar(range(len(dist_names)), mae_means, yerr=mae_stds,
-                          capsize=8, alpha=0.8, color=dist_colors, edgecolor='black', linewidth=1.5)
+                          capsize=10, alpha=0.8, color=dist_colors, edgecolor='black', linewidth=2)
         ax_mae.set_xticks(range(len(dist_names)))
-        ax_mae.set_xticklabels(dist_names, fontsize=12, fontweight='bold')
-        ax_mae.set_ylabel('Mean Absolute Error', fontsize=14, fontweight='bold')
-        ax_mae.set_title(f'MAE - {SCENARIOS[scenario_key]["name"]}', fontsize=16, fontweight='bold')
+        ax_mae.set_xticklabels(dist_names, fontsize=18, fontweight='bold')
+        ax_mae.set_ylabel('Mean Absolute Error', fontsize=22, fontweight='bold', labelpad=12)
+        ax_mae.set_title(f'MAE - {SCENARIOS[scenario_key]["name"]}', fontsize=24, fontweight='bold', pad=14)
         ax_mae.grid(True, alpha=0.5, axis='y', linewidth=1.5)
-        ax_mae.tick_params(axis='both', which='major', labelsize=12, width=2, length=6)
+        ax_mae.tick_params(axis='both', which='major', labelsize=18, width=2.5, length=8)
     
-    plt.tight_layout()
+    plt.tight_layout(pad=1.5)
     output_path = Path(output_dir) / 'sensitivity_distributions.pdf'
     plt.savefig(output_path, dpi=300, bbox_inches='tight', facecolor='white', edgecolor='none')
     print(f"  [OK] Saved to: {output_path}")
@@ -1643,11 +1673,11 @@ def plot_elbo_traces(main_results, output_dir):
                    transform=ax.transAxes, fontsize=18, ha='center', va='center')
         
         # Add runtime annotation with larger font
-        ax.text(0.02, 0.98, f'Runtime: {runtime_mean:.1f}s', 
-               transform=ax.transAxes, fontsize=16, fontweight='bold',
-               verticalalignment='top',
-               bbox=dict(boxstyle='round', facecolor='white', alpha=0.9, 
-                        edgecolor='black', linewidth=1.5))
+        # ax.text(0.02, 0.98, f'Runtime: {runtime_mean:.1f}s', 
+        #        transform=ax.transAxes, fontsize=16, fontweight='bold',
+        #        verticalalignment='top',
+        #        bbox=dict(boxstyle='round', facecolor='white', alpha=0.9, 
+        #                 edgecolor='black', linewidth=1.5))
         
         # Set y-axis label for Neg ELBO with fixed scientific notation
         ax.set_ylabel('Neg ELBO (×10$^{{5}}$)', fontsize=20, fontweight='bold', labelpad=10)
@@ -1672,28 +1702,32 @@ def plot_elbo_traces(main_results, output_dir):
     plt.rcParams.update(plt.rcParamsDefault)
 
 def plot_mae_and_ppc(main_results, output_dir):
-    """Generate 6x2 plots: MAE boxplots and PPC p-value boxplots, optimized for A4 print."""
+    """Generate 3x4 plots: MAE boxplots and PPC p-value boxplots, optimized for A4 horizontal print."""
     print("\n  Generating MAE and PPC plots...")
     
-    # Optimized for A4 print quality
+    # Optimized for A4 horizontal print quality
     plt.rcParams.update({
-        'font.size': 18,           # Base font size (increased)
-        'axes.titlesize': 22,      # Title font size
-        'axes.labelsize': 20,      # Axis label font size
-        'xtick.labelsize': 16,     # X-axis tick font size (increased)
-        'ytick.labelsize': 16,     # Y-axis tick font size (increased)
-        'legend.fontsize': 16,     # Legend font size (increased)
-        'figure.titlesize': 24,    # Figure title font size
-        'lines.linewidth': 4,      # Thicker lines
-        'axes.linewidth': 1.5,     # Thicker axis borders
-        'grid.linewidth': 1.2,     # Thicker grid lines
-        'xtick.major.width': 2,    # Thicker tick marks
-        'ytick.major.width': 2,
-        'xtick.major.size': 8,     # Longer tick marks
-        'ytick.major.size': 8,
+        'font.size': 22,           # Base font size (increased for horizontal layout)
+        'axes.titlesize': 26,      # Title font size
+        'axes.labelsize': 24,      # Axis label font size
+        'xtick.labelsize': 20,     # X-axis tick font size (increased)
+        'ytick.labelsize': 20,     # Y-axis tick font size (increased)
+        'legend.fontsize': 18,     # Legend font size (increased)
+        'figure.titlesize': 28,    # Figure title font size
+        'lines.linewidth': 5,      # Thicker lines for better visibility
+        'axes.linewidth': 2,       # Thicker axis borders
+        'grid.linewidth': 1.5,     # Thicker grid lines
+        'xtick.major.width': 2.5,  # Thicker tick marks
+        'ytick.major.width': 2.5,
+        'xtick.major.size': 10,    # Longer tick marks
+        'ytick.major.size': 10,
     })
     
-    fig, axes = plt.subplots(6, 2, figsize=(18, 36))
+    # 3x4 layout: 3 rows x 4 columns for A4 horizontal
+    # Row 1: A_MAE, A_PPC, B_MAE, B_PPC
+    # Row 2: C_MAE, C_PPC, D_MAE, D_PPC
+    # Row 3: E_MAE, E_PPC, F_MAE, F_PPC
+    fig, axes = plt.subplots(3, 4, figsize=(28, 21))  # Optimized for A4 horizontal
     scenarios = list(main_results.keys())
     
     # Define colors consistent with simulation.pdf
@@ -1706,8 +1740,13 @@ def plot_mae_and_ppc(main_results, output_dir):
     for i, scenario in enumerate(scenarios):
         scenario_data = main_results[scenario]
         
-        # Left column: MAE comparison as boxplots
-        ax_mae = axes[i, 0]
+        # Map to 3x4 layout: row = i // 2, col_mae = (i % 2) * 2, col_ppc = (i % 2) * 2 + 1
+        row = i // 2
+        col_mae = (i % 2) * 2
+        col_ppc = (i % 2) * 2 + 1
+        
+        # MAE comparison as boxplots
+        ax_mae = axes[row, col_mae]
         
         # Prepare data for boxplot (all replications)
         mae_data = [
@@ -1719,25 +1758,25 @@ def plot_mae_and_ppc(main_results, output_dir):
         # Create boxplot with thicker lines for print
         bp = ax_mae.boxplot(mae_data, labels=['BrtaCFR', 'cCFR', 'mCFR'],
                            patch_artist=True, widths=0.6,
-                           boxprops=dict(linewidth=2.5),
-                           medianprops=dict(linewidth=4, color='red'),
-                           whiskerprops=dict(linewidth=2.5),
-                           capprops=dict(linewidth=2.5),
-                           flierprops=dict(markersize=8))  # Larger outlier markers
+                           boxprops=dict(linewidth=3),
+                           medianprops=dict(linewidth=5, color='red'),
+                           whiskerprops=dict(linewidth=3),
+                           capprops=dict(linewidth=3),
+                           flierprops=dict(markersize=10))  # Larger outlier markers
         
         # Color the boxes
         for patch, method in zip(bp['boxes'], ['BrtaCFR', 'cCFR', 'mCFR']):
             patch.set_facecolor(colors[method])
             patch.set_alpha(0.7)
         
-        ax_mae.set_xlabel('Method', fontsize=20, fontweight='bold', labelpad=10)
-        ax_mae.set_ylabel('MAE', fontsize=20, fontweight='bold', labelpad=10)
+        ax_mae.set_xlabel('Method', fontsize=24, fontweight='bold', labelpad=12)
+        ax_mae.set_ylabel('MAE', fontsize=24, fontweight='bold', labelpad=12)
         ax_mae.set_title(f'Scenario {scenario}: {SCENARIOS[scenario]["name"]}', 
-                        fontsize=22, fontweight='bold', pad=12)
-        ax_mae.grid(True, alpha=0.5, axis='y', linewidth=1.2)
+                        fontsize=26, fontweight='bold', pad=14)
+        ax_mae.grid(True, alpha=0.5, axis='y', linewidth=1.5)
         
-        # Right column: PPC Functional Ribbon Visualization
-        ax_ppc = axes[i, 1]
+        # PPC Functional Ribbon Visualization
+        ax_ppc = axes[row, col_ppc]
         
         # Get μ_t quantiles from all replications
         mu_t_quantiles_list = scenario_data.get('mu_t_quantiles_list', [])
@@ -1768,27 +1807,27 @@ def plot_mae_and_ppc(main_results, output_dir):
                                color='steelblue', alpha=0.7, label='80% band')
             
             # Median prediction: Functional median of posterior predictive means across replications
-            ax_ppc.plot(DAYS, median_curve, color='red', linewidth=4, 
+            ax_ppc.plot(DAYS, median_curve, color='red', linewidth=5, 
                        label='Median prediction', alpha=0.9)
             
             # True μ_t: The actual expected deaths based on true CFR and cases
-            ax_ppc.plot(DAYS, true_mu_t, color='black', linewidth=4, 
+            ax_ppc.plot(DAYS, true_mu_t, color='black', linewidth=5, 
                        linestyle='-', label='True $\mu_t$', alpha=0.9)
             
-            if i == 0:  # Only show legend on first row (Scenario A)
-                ax_ppc.legend(loc='lower right', fontsize=14, framealpha=0.95, edgecolor='black', 
+            if i == 0:  # Only show legend on first subplot (Scenario A)
+                ax_ppc.legend(loc='lower right', fontsize=18, framealpha=0.95, edgecolor='black', 
                              frameon=True, bbox_to_anchor=(1.0, 0.0))
         else:
             ax_ppc.text(0.5, 0.5, 'PPC data not available', 
-                       transform=ax_ppc.transAxes, fontsize=18, ha='center', va='center')
+                       transform=ax_ppc.transAxes, fontsize=22, ha='center', va='center')
         
-        ax_ppc.set_xlabel('Days', fontsize=20, fontweight='bold', labelpad=10)
-        ax_ppc.set_ylabel('Expected Deaths ($\mu_t$)', fontsize=20, fontweight='bold', labelpad=10)
+        ax_ppc.set_xlabel('Days', fontsize=24, fontweight='bold', labelpad=12)
+        ax_ppc.set_ylabel('Expected Deaths ($\mu_t$)', fontsize=24, fontweight='bold', labelpad=12)
         ax_ppc.set_title(f'Scenario {scenario}: {SCENARIOS[scenario]["name"]}', 
-                        fontsize=22, fontweight='bold', pad=12)
-        ax_ppc.grid(True, alpha=0.5, linewidth=1.2)
+                        fontsize=26, fontweight='bold', pad=14)
+        ax_ppc.grid(True, alpha=0.5, linewidth=1.5)
     
-    plt.tight_layout(pad=1.0)
+    plt.tight_layout(pad=1.5)
     output_path = Path(output_dir) / 'mae_and_ppc.pdf'
     plt.savefig(output_path, dpi=300, bbox_inches='tight', facecolor='white', edgecolor='none')
     print(f"  [OK] Saved to: {output_path}")

@@ -31,8 +31,9 @@ from methods import BrtaCFR_estimator, mCFR_EST
 # =============================================================================
 
 COUNTRY = "Germany"
-START_DATE = "2020-01-27"  # 1/27/20
-END_DATE = "2022-01-07"     # 1/7/22
+START_DATE = "2020-01-27"  
+END_DATE = "2022-09-30"     # Original end date for analysis
+FIT_EXTEND_DAYS = 30        # Extend fitting by 40 days to reduce tail effects
 
 # Johns Hopkins CSSE GitHub raw URLs
 CONFIRMED_URL = "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/time_series_covid19_confirmed_global.csv"
@@ -216,10 +217,16 @@ def main():
     print(f"\n{'='*80}")
     print(f"COVID-19 CFR Analysis for {COUNTRY}")
     print(f"{'='*80}")
+    # Calculate extended end date for fitting
+    from datetime import datetime, timedelta
+    end_date_obj = datetime.strptime(END_DATE, "%Y-%m-%d")
+    extended_end_date = (end_date_obj + timedelta(days=FIT_EXTEND_DAYS)).strftime("%Y-%m-%d")
+    
     print(f"Data source: Johns Hopkins CSSE COVID-19 Data Repository")
     print(f"  GitHub: https://github.com/CSSEGISandData/COVID-19")
     print(f"Country: {COUNTRY}")
-    print(f"Date range: {START_DATE} to {END_DATE}")
+    print(f"Analysis date range: {START_DATE} to {END_DATE}")
+    print(f"Fitting date range: {START_DATE} to {extended_end_date} (extended by {FIT_EXTEND_DAYS} days)")
     
     print(f"\nLoading confirmed cases data...")
     confirmed_df = load_jhu_data(confirmed_local, CONFIRMED_URL)
@@ -240,12 +247,13 @@ def main():
     # --- 2. Extract Germany Data ---
     print(f"\nExtracting {COUNTRY} data...")
     
+    # Extract data with extended end date for fitting
     dates_conf, cumulative_confirmed = extract_country_timeseries(
-        confirmed_df, COUNTRY, START_DATE, END_DATE
+        confirmed_df, COUNTRY, START_DATE, extended_end_date
     )
     
     dates_deaths, cumulative_deaths = extract_country_timeseries(
-        deaths_df, COUNTRY, START_DATE, END_DATE
+        deaths_df, COUNTRY, START_DATE, extended_end_date
     )
     
     # Ensure dates align
@@ -303,6 +311,33 @@ def main():
     cCFR = np.cumsum(dt) / (np.cumsum(ct)+1e-10)
     mCFR = mCFR_EST(ct, dt, delay_dist_pmf)
     print("✓ cCFR and mCFR calculation complete.")
+    
+    # --- 5b. Truncate data to original analysis period ---
+    # Find the index corresponding to the original END_DATE
+    original_end_idx = None
+    for i, date in enumerate(dates):
+        if date.strftime("%Y-%m-%d") == END_DATE:
+            original_end_idx = i + 1  # +1 because we want to include this day
+            break
+    
+    if original_end_idx is not None:
+        print(f"Truncating data to original analysis period (up to {END_DATE})...")
+        # Truncate all arrays to original analysis period
+        ct = ct[:original_end_idx]
+        dt = dt[:original_end_idx]
+        dates = dates[:original_end_idx]
+        cumulative_confirmed = cumulative_confirmed[:original_end_idx]
+        cumulative_deaths = cumulative_deaths[:original_end_idx]
+        results['mean'] = results['mean'][:original_end_idx]
+        results['lower'] = results['lower'][:original_end_idx]
+        results['upper'] = results['upper'][:original_end_idx]
+        cCFR = cCFR[:original_end_idx]
+        mCFR = mCFR[:original_end_idx]
+        delay_dist_pmf = delay_dist_pmf[:original_end_idx]
+        T = len(ct)  # Update T to reflect truncated length
+        print(f"✓ Data truncated to {T} days for analysis")
+    else:
+        print(f"WARNING: Could not find {END_DATE} in dates, using full extended dataset")
 
     # --- 6. Smooth the BrtaCFR for Visualization ---
     # Use Nadaraya-Watson kernel regression for smoothing. The bandwidth (bw) of 21
@@ -328,9 +363,10 @@ def main():
                                     bw=[21], 
                                     ckertype='gaussian')
     
-    smoothed_brtacfr = kreg_brtacfr.fit(np.arange(1,T+1))[0]
-    smooth_brtacfr_CrIL = kreg_brtaCFR_CrI_Low.fit(np.arange(1,T+1))[0]
-    smooth_brtacfr_CrIU = kreg_brtaCFR_CrI_Up.fit(np.arange(1,T+1))[0]
+    # Apply smoothing with non-negative constraint
+    smoothed_brtacfr = np.maximum(kreg_brtacfr.fit(np.arange(1,T+1))[0], 0)
+    smooth_brtacfr_CrIL = np.maximum(kreg_brtaCFR_CrI_Low.fit(np.arange(1,T+1))[0], 0)
+    smooth_brtacfr_CrIU = np.maximum(kreg_brtaCFR_CrI_Up.fit(np.arange(1,T+1))[0], 0)
 
     # --- 6b. Calculate 7-day moving averages ---
     cases_ma7 = pd.Series(ct).rolling(window=7, min_periods=1, center=False).mean().values

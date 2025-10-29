@@ -135,9 +135,10 @@ def main():
                                     bw=[21], 
                                     ckertype='gaussian')
     
-    smoothed_brtacfr = kreg_brtacfr.fit(np.arange(1,T+1))[0]
-    smooth_brtacfr_CrIL = kreg_brtaCFR_CrI_Low.fit(np.arange(1,T+1))[0]
-    smooth_brtacfr_CrIU = kreg_brtaCFR_CrI_Up.fit(np.arange(1,T+1))[0]
+    # Apply smoothing with non-negative constraint
+    smoothed_brtacfr = np.maximum(kreg_brtacfr.fit(np.arange(1,T+1))[0], 0)
+    smooth_brtacfr_CrIL = np.maximum(kreg_brtaCFR_CrI_Low.fit(np.arange(1,T+1))[0], 0)
+    smooth_brtacfr_CrIU = np.maximum(kreg_brtaCFR_CrI_Up.fit(np.arange(1,T+1))[0], 0)
 
     # --- 3b. Calculate 7-day moving averages ---
     cases_ma7 = pd.Series(ct).rolling(window=7, min_periods=1, center=False).mean().values

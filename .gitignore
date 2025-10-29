@@ -90,6 +90,7 @@ outputs/
 outputs_demo/
 checkpoints/
 checkpoints_demo/
+output_application/
 
 # Remove PDF files
 *.pdf
