@@ -154,9 +154,9 @@ def main():
     ax.fill_between(dates, smooth_brtacfr_CrIL, smooth_brtacfr_CrIU, color='blue', alpha=0.2, label='95% Credible Interval')
 
     # Final plot styling
-    ax.set_title(f'Case Fatality Rate Estimators for {COUNTRY}', fontsize=16)
-    ax.set_xlabel('Date', fontsize=12)
-    ax.set_ylabel('Fatality Rate', fontsize=12)
+    ax.set_title(f'Case Fatality Rate Estimators for {COUNTRY}', fontsize=16, fontweight='bold')
+    ax.set_xlabel('Date', fontsize=12, fontweight='bold')
+    ax.set_ylabel('Fatality Rate', fontsize=12, fontweight='bold')
     ax.legend(loc='upper left')
     ax.grid(True, which='both', linestyle='--', linewidth=0.5)
     ax.set_ylim(0, 0.15)
@@ -164,6 +164,13 @@ def main():
     # Format the x-axis to show dates clearly
     ax.xaxis.set_major_locator(mdates.MonthLocator(bymonth=[1, 4, 7, 10]))
     ax.xaxis.set_major_formatter(mdates.DateFormatter('%b %Y'))
+    
+    # Bold tick labels
+    ax.tick_params(axis='both', which='major', labelsize=11)
+    for label in ax.get_xticklabels():
+        label.set_fontweight('bold')
+    for label in ax.get_yticklabels():
+        label.set_fontweight('bold')
     
     # Save the figure
     plt.tight_layout()
@@ -173,19 +180,29 @@ def main():
     # --- 5. Generate Daily Cases and Deaths Plot ---
     fig2, ax1 = plt.subplots(figsize=(14, 8))
     ax1.plot(dates, ct, color="black", linewidth=1.1, label="Cases (daily)")
-    ax1.set_ylabel("Cases (daily)", color="black", fontsize=12)
+    ax1.set_ylabel("Cases (daily)", color="black", fontsize=12, fontweight='bold')
     ax1.tick_params(axis='y', labelcolor='black')
     
     ax2 = ax1.twinx()
     ax2.plot(dates, dt, color="red", linewidth=1.1, label="Deaths (daily)")
-    ax2.set_ylabel("Deaths (daily)", color="red", fontsize=12)
+    ax2.set_ylabel("Deaths (daily)", color="red", fontsize=12, fontweight='bold')
     ax2.tick_params(axis='y', labelcolor='red')
     
-    ax1.set_title(f"COVID-19 ({COUNTRY}) — Daily Cases and Deaths", fontsize=16)
-    ax1.set_xlabel("Date", fontsize=12)
+    ax1.set_title(f"COVID-19 ({COUNTRY}) — Daily Cases and Deaths", fontsize=16, fontweight='bold')
+    ax1.set_xlabel("Date", fontsize=12, fontweight='bold')
     ax1.grid(True, linestyle='--', linewidth=0.5, alpha=0.6)
     ax1.xaxis.set_major_locator(mdates.MonthLocator(bymonth=[1, 4, 7, 10]))
     ax1.xaxis.set_major_formatter(mdates.DateFormatter('%b %Y'))
+    
+    # Bold tick labels
+    ax1.tick_params(axis='both', which='major', labelsize=11)
+    ax2.tick_params(axis='both', which='major', labelsize=11)
+    for label in ax1.get_xticklabels():
+        label.set_fontweight('bold')
+    for label in ax1.get_yticklabels():
+        label.set_fontweight('bold')
+    for label in ax2.get_yticklabels():
+        label.set_fontweight('bold')
     
     fig2.autofmt_xdate()
     plt.tight_layout()
@@ -196,20 +213,30 @@ def main():
     # --- 6. Generate 7-day Moving Averages Plot ---
     fig3, ax1 = plt.subplots(figsize=(14, 8))
     ax1.plot(dates, cases_ma7, color="black", linewidth=1.8, label="Cases: 7-day Moving Average")
-    ax1.set_ylabel("Cases: 7-day Moving Average", color="black", fontsize=12)
+    ax1.set_ylabel("Cases: 7-day Moving Average", color="black", fontsize=12, fontweight='bold')
     ax1.tick_params(axis='y', labelcolor='black')
     
     ax2 = ax1.twinx()
     ax2.plot(dates, deaths_ma7, color="red", linewidth=2.0,
              label="Deaths: 7-day Moving Average")
-    ax2.set_ylabel("Deaths: 7-day Moving Average", color="red", fontsize=12)
+    ax2.set_ylabel("Deaths: 7-day Moving Average", color="red", fontsize=12, fontweight='bold')
     ax2.tick_params(axis='y', labelcolor='red')
     
-    ax1.set_title(f"COVID-19 ({COUNTRY}) — 7-day Moving Averages of Cases and Deaths", fontsize=16)
-    ax1.set_xlabel("Dates", fontsize=12)
+    ax1.set_title(f"COVID-19 ({COUNTRY}) — 7-day Moving Averages", fontsize=16, fontweight='bold')
+    ax1.set_xlabel("Date", fontsize=12, fontweight='bold')
     ax1.grid(True, linestyle='--', linewidth=0.5, alpha=0.6)
     ax1.xaxis.set_major_locator(mdates.MonthLocator(bymonth=[1, 4, 7, 10]))
     ax1.xaxis.set_major_formatter(mdates.DateFormatter('%b %Y'))
+    
+    # Bold tick labels
+    ax1.tick_params(axis='both', which='major', labelsize=11)
+    ax2.tick_params(axis='both', which='major', labelsize=11)
+    for label in ax1.get_xticklabels():
+        label.set_fontweight('bold')
+    for label in ax1.get_yticklabels():
+        label.set_fontweight('bold')
+    for label in ax2.get_yticklabels():
+        label.set_fontweight('bold')
     
     # Unified legend
     lines1, labels1 = ax1.get_legend_handles_labels()
