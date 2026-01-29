@@ -12,8 +12,6 @@ warnings.filterwarnings('ignore', category=UserWarning, module='pytensor')
 
 import numpy as np
 import pandas as pd
-import pymc as pm
-import pytensor.tensor as pt
 from scipy.stats import gamma
 
 # =============================================================================
@@ -38,6 +36,9 @@ def logp(value, mu, lam, sigma, T):
     Returns:
         pyt.Tensor: The log-probability of the prior.
     """
+    # Lazy import so plotting-only runs don't require PyMC/PyTensor installed/working.
+    import pytensor.tensor as pt
+
     # Fused LASSO component: Penalizes large differences between adjacent time points
     fused_lasso_logp = -lam*pt.sum(pt.abs(pt.diff(value)))+(T-1)*pt.log(lam/2)
 
@@ -91,6 +92,9 @@ def BrtaCFR_estimator(c_t, d_t, F_paras):
         dict: A dictionary containing the posterior mean, 95% credible intervals,
               and the full posterior samples for the fatality rate p_t.
     """
+    # Lazy import so scripts that only need plotting/checkpoint reading can run
+    # even if PyMC/PyTensor are unavailable or mismatched.
+    import pymc as pm
     
     T = len(c_t)
     mean_delay, shape_delay = F_paras

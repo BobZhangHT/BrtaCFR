@@ -58,9 +58,6 @@ from scipy.stats import gamma, weibull_min, lognorm
 from scipy.special import gamma as gamma_func
 from scipy.optimize import fsolve
 from scipy import stats
-import pymc as pm
-import pytensor.tensor as pt
-import arviz as az
 
 # Import core methods
 from methods import BrtaCFR_estimator, mCFR_EST, logp
@@ -413,6 +410,8 @@ def run_main_analysis_single(data, include_diagnostics=True):
 def run_brtacfr_with_diagnostics(c_t, d_t, F_paras):
     """BrtaCFR with diagnostics: calculate μ_t quantiles for PPC functional ribbon visualization."""
     import time
+    # Lazy import so plotting-only runs don't require PyMC/PyTensor installed/working.
+    import pymc as pm
     start_time = time.time()
     
     T = len(c_t)
@@ -999,6 +998,9 @@ def run_brtacfr_mcmc(c_t, d_t, F_paras, n_samples=500, n_chains=2, tune=500):
     - 2 chains for faster computation
     - NUTS sampler (default, more robust than MH)
     """
+    # Lazy imports so plotting-only runs can succeed without PyMC stack.
+    import pymc as pm
+    import arviz as az
     T = len(c_t)
     mean_delay, shape_delay = F_paras
     scale_delay = mean_delay / shape_delay
@@ -1492,6 +1494,27 @@ def plot_mcmc_comparison(mcmc_results, output_dir):
     advi_times = [mcmc_results[s]['advi_runtime_mean'] for s in scenarios]
     mcmc_errs = [mcmc_results[s]['mcmc_runtime_std'] for s in scenarios]
     advi_errs = [mcmc_results[s]['advi_runtime_std'] for s in scenarios]
+
+    # If inference failed (e.g., PyMC stack unavailable/mismatched) these may be None.
+    # Fallback: re-plot from the previously exported CSV if present.
+    if any(v is None for v in (mcmc_times + advi_times + mcmc_errs + advi_errs)):
+        csv_path = Path(output_dir) / 'mcmc_vs_advi_comparison.csv'
+        if csv_path.exists():
+            df = pd.read_csv(csv_path)
+            scenarios = df['Scenario'].tolist()
+            x = np.arange(len(scenarios))
+            mcmc_times = df['MCMC_Runtime_Mean'].tolist()
+            advi_times = df['ADVI_Runtime_Mean'].tolist()
+            mcmc_errs = df['MCMC_Runtime_SD'].tolist()
+            advi_errs = df['ADVI_Runtime_SD'].tolist()
+            # MAE values also used below
+            mcmc_maes_fallback = df['MCMC_MAE'].tolist()
+            advi_maes_fallback = df['ADVI_MAE'].tolist()
+        else:
+            raise RuntimeError(
+                "MCMC/ADVI results are missing (None) and fallback CSV does not exist. "
+                "Cannot plot mcmc_vs_advi_comparison."
+            )
     
     ax1.bar(x - width/2, mcmc_times, width, yerr=mcmc_errs, label='MCMC', 
             alpha=0.8, capsize=8, color=mcmc_color, edgecolor='black', linewidth=1.5)
@@ -1508,7 +1531,10 @@ def plot_mcmc_comparison(mcmc_results, output_dir):
     
     # Plot 2: Speedup (without text annotations)
     ax2 = axes[0, 1]
-    speedups = [mcmc_results[s]['speedup'] for s in scenarios]
+    if 'mcmc_maes_fallback' in locals():
+        speedups = df['Speedup'].tolist()
+    else:
+        speedups = [mcmc_results[s]['speedup'] for s in scenarios]
     bars = ax2.bar(scenarios, speedups, alpha=0.8, color='#2ca02c', edgecolor='black', linewidth=1.5)
     ax2.axhline(y=1, color='r', linestyle='--', linewidth=3, label='No speedup')
     ax2.set_xlabel('Scenario', fontsize=16, fontweight='bold')
@@ -1522,8 +1548,12 @@ def plot_mcmc_comparison(mcmc_results, output_dir):
     
     # Plot 3: MAE Comparison
     ax3 = axes[1, 0]
-    mcmc_maes = [mcmc_results[s]['mcmc_mae_mean'] for s in scenarios]
-    advi_maes = [mcmc_results[s]['advi_mae_mean'] for s in scenarios]
+    if 'mcmc_maes_fallback' in locals():
+        mcmc_maes = mcmc_maes_fallback
+        advi_maes = advi_maes_fallback
+    else:
+        mcmc_maes = [mcmc_results[s]['mcmc_mae_mean'] for s in scenarios]
+        advi_maes = [mcmc_results[s]['advi_mae_mean'] for s in scenarios]
     ax3.bar(x - width/2, mcmc_maes, width, label='MCMC', alpha=0.8, color=mcmc_color, edgecolor='black', linewidth=1.5)
     ax3.bar(x + width/2, advi_maes, width, label='ADVI', alpha=0.8, color=advi_color, edgecolor='black', linewidth=1.5)
     ax3.set_xlabel('Scenario', fontsize=16, fontweight='bold')
@@ -1531,7 +1561,15 @@ def plot_mcmc_comparison(mcmc_results, output_dir):
     ax3.set_title('(C) Accuracy Comparison', fontsize=18, fontweight='bold')
     ax3.set_xticks(x)
     ax3.set_xticklabels(scenarios, fontsize=14, fontweight='bold')
-    ax3.legend(fontsize=14, framealpha=0.9, edgecolor='black')
+    # Center the legend above the bars to avoid covering any bar
+    ax3.legend(
+        fontsize=14,
+        framealpha=0.9,
+        edgecolor='black',
+        loc='upper center',
+        bbox_to_anchor=(0.5, 0.98),
+        ncol=2,
+    )
     ax3.grid(True, alpha=0.5, axis='y', linewidth=1.5)
     ax3.tick_params(axis='both', which='major', labelsize=14, width=2, length=6)
     
