@@ -1,35 +1,44 @@
-# run_application.py
+# run_application_covid_JP.py
 
-import warnings
+"""
+COVID-19 CFR Analysis for Japan using WHO COVID-19 global daily data.
+Data source: WHO COVID-19 global daily data (see DATA_URL).
+"""
+
 import argparse
-import pandas as pd
-import numpy as np
-import matplotlib.pyplot as plt
-import matplotlib.dates as mdates
-import requests
 import os
+import warnings
 from pathlib import Path
+
+import matplotlib.dates as mdates
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import requests
 from scipy.stats import gamma
 from statsmodels.nonparametric.kernel_regression import KernelReg
 
 # Suppress PyTensor BLAS warning
-warnings.filterwarnings('ignore', message='.*PyTensor could not link to a BLAS.*')
-warnings.filterwarnings('ignore', category=UserWarning, module='pytensor')
+warnings.filterwarnings("ignore", message=".*PyTensor could not link to a BLAS.*")
+warnings.filterwarnings("ignore", category=UserWarning, module="pytensor")
 
 # Import the core estimator function and the mCFR helper
-from methods import BrtaCFR_estimator, mCFR_EST, lambda_summary_stats
+from methods import BrtaCFR_estimator, lambda_summary_stats, mCFR_EST
 
 # =============================================================================
 # Global Parameters
 # =============================================================================
 
-DATA_URL = "https://srhdpeuwpubsa.blob.core.windows.net/whdh/COVID/WHO-COVID-19-global-daily-data.csv"
+DATA_URL = (
+    "https://srhdpeuwpubsa.blob.core.windows.net/whdh/COVID/WHO-COVID-19-global-daily-data.csv"
+)
 DATA_FILE = "WHO-COVID-19-global-daily-data.csv"
 COUNTRY = "Japan"
 
 # =============================================================================
 # Helper Functions
 # =============================================================================
+
 
 def download_data(url, filename):
     """
@@ -43,9 +52,10 @@ def download_data(url, filename):
         print(f"Downloading data from {url}...")
         response = requests.get(url)
         response.raise_for_status()
-        with open(filename, 'wb') as f:
+        with open(filename, "wb") as f:
             f.write(response.content)
         print(f"Data saved to {filename}")
+
 
 def get_delay_dist_pmf(F_paras, T):
     """
@@ -60,13 +70,15 @@ def get_delay_dist_pmf(F_paras, T):
     """
     mean_delay, shape_delay = F_paras
     scale_delay = mean_delay / shape_delay
-    F_k = gamma.cdf(np.arange(T+1), a=shape_delay, scale=scale_delay)
+    F_k = gamma.cdf(np.arange(T + 1), a=shape_delay, scale=scale_delay)
     f_k = np.diff(F_k)
     return f_k
+
 
 # =============================================================================
 # Main Execution Block
 # =============================================================================
+
 
 def main():
     """
@@ -77,75 +89,98 @@ def main():
     4. Generates and saves the final plot.
     5. Saves all curves to CSV for further analysis.
     """
-    parser = argparse.ArgumentParser(description='BrtaCFR real-data application: Japan')
-    parser.add_argument('--lambda_scale', type=float, default=1.0,
-                        help='Half-Cauchy scale for lambda prior (default: 1.0)')
-    parser.add_argument('--save_lambda_summary', action='store_true',
-                        help='Save posterior lambda summary to outputs/lambda_summary/')
+    parser = argparse.ArgumentParser(description="BrtaCFR real-data application: Japan")
+    parser.add_argument(
+        "--lambda_scale",
+        type=float,
+        default=1.0,
+        help="Half-Cauchy scale for lambda prior (default: 1.0)",
+    )
+    parser.add_argument(
+        "--save_lambda_summary",
+        action="store_true",
+        help="Save posterior lambda summary to outputs/lambda_summary/",
+    )
     args = parser.parse_args()
-    
+
     # --- 0. Create output directory ---
     output_dir = "output_application"
     os.makedirs(output_dir, exist_ok=True)
-    
+
     # --- 1. Data Loading and Preparation ---
     download_data(DATA_URL, DATA_FILE)
-    df = pd.read_csv(DATA_FILE, parse_dates=['Date_reported'])
-    
+    df = pd.read_csv(DATA_FILE, parse_dates=["Date_reported"])
+
     # Filter for Japan and the specific time period of interest
-    df_country = df[df['Country'] == COUNTRY].copy()
+    df_country = df[df["Country"] == COUNTRY].copy()
     df_country = df_country[
-        (df_country['Date_reported'] >= '2020-01-16') & 
-        (df_country['Date_reported'] <= '2022-10-31')
+        (df_country["Date_reported"] >= "2020-01-16")
+        & (df_country["Date_reported"] <= "2022-10-31")
     ]
-    df_country = df_country.sort_values('Date_reported').reset_index(drop=True)
-    
+    df_country = df_country.sort_values("Date_reported").reset_index(drop=True)
+
     # Extract cases, deaths, and dates, ensuring non-negativity
-    ct = df_country['New_cases'].values
-    dt = df_country['New_deaths'].values
+    ct = df_country["New_cases"].values
+    dt = df_country["New_deaths"].values
     ct[ct < 0] = 0
     dt[dt < 0] = 0
-    dates = df_country['Date_reported']
+    dates = df_country["Date_reported"]
 
     # --- 2. Run All Estimators ---
     print("\n--- Running Estimators ---")
     print(f"Running BrtaCFR estimator for {COUNTRY}...")
     F_paras_default = (15.43, 2.03)
     n_draws = 5000 if args.save_lambda_summary else 1000
-    results = BrtaCFR_estimator(ct, dt, F_paras_default, lambda_scale=args.lambda_scale, n_draws=n_draws)
+    results = BrtaCFR_estimator(
+        ct, dt, F_paras_default, lambda_scale=args.lambda_scale, n_draws=n_draws
+    )
     print("BrtaCFR estimation complete.")
 
     # Report and store posterior lambda summary (median, q025, q975) whenever available
     if results.get("lambda_draws") is not None:
         lam_med, lam_q025, lam_q975 = lambda_summary_stats(results["lambda_draws"])
-        print(f"  Posterior lambda: median = {lam_med:.4f}, 95% CrI [q025, q975] = [{lam_q025:.4f}, {lam_q975:.4f}]")
+        print(
+            f"  Posterior lambda: median = {lam_med:.4f}, 95% CrI [q025, q975] = [{lam_q025:.4f}, {lam_q975:.4f}]"
+        )
         Path(output_dir).mkdir(parents=True, exist_ok=True)
         lambda_summary_df = pd.DataFrame(
-            [{"dataset": COUNTRY, "lambda_median": lam_med, "lambda_q025": lam_q025, "lambda_q975": lam_q975}]
+            [
+                {
+                    "dataset": COUNTRY,
+                    "lambda_median": lam_med,
+                    "lambda_q025": lam_q025,
+                    "lambda_q975": lam_q975,
+                }
+            ]
         )
         lambda_summary_path = Path(output_dir) / "covid_japan_lambda_summary.csv"
         lambda_summary_df.to_csv(lambda_summary_path, index=False)
         print(f"  [OK] Lambda summary saved to {lambda_summary_path}")
 
-    if args.save_lambda_summary and results.get('lambda_draws') is not None:
-        out_dir = Path('outputs') / 'lambda_summary'
+    if args.save_lambda_summary and results.get("lambda_draws") is not None:
+        out_dir = Path("outputs") / "lambda_summary"
         out_dir.mkdir(parents=True, exist_ok=True)
-        row = {'dataset': 'Japan', 'lambda_median': lam_med, 'lambda_q025': lam_q025, 'lambda_q975': lam_q975}
-        csv_path = out_dir / 'lambda_summary_real.csv'
+        row = {
+            "dataset": "Japan",
+            "lambda_median": lam_med,
+            "lambda_q025": lam_q025,
+            "lambda_q975": lam_q975,
+        }
+        csv_path = out_dir / "lambda_summary_real.csv"
         if csv_path.exists():
             df_real = pd.read_csv(csv_path)
-            df_real = df_real[df_real['dataset'] != 'Japan']
+            df_real = df_real[df_real["dataset"] != "Japan"]
             df_real = pd.concat([df_real, pd.DataFrame([row])], ignore_index=True)
         else:
             df_real = pd.DataFrame([row])
         df_real.to_csv(csv_path, index=False)
-        with open(out_dir / 'lambda_summary_real.tex', 'w') as f:
-            f.write(df_real.to_latex(index=False, float_format='%.4f'))
+        with open(out_dir / "lambda_summary_real.tex", "w") as f:
+            f.write(df_real.to_latex(index=False, float_format="%.4f"))
         print(f"  [OK] Lambda summary saved to {out_dir / 'lambda_summary_real.csv'}")
 
     # Calculate cCFR and mCFR for comparison
     delay_dist_pmf = get_delay_dist_pmf(F_paras_default, len(ct))
-    cCFR = np.cumsum(dt) / (np.cumsum(ct)+1e-10)
+    cCFR = np.cumsum(dt) / (np.cumsum(ct) + 1e-10)
     mCFR = mCFR_EST(ct, dt, delay_dist_pmf)
     print("cCFR and mCFR calculation complete.")
 
@@ -153,29 +188,35 @@ def main():
     # Use Nadaraya-Watson kernel regression for smoothing. The bandwidth (bw) of 21
     # corresponds to a 3-week window, which helps visualize the underlying trend.
     T = ct.shape[0]
-    kreg_brtacfr = KernelReg(endog=results['mean'], 
-                             exog=np.arange(1,T+1), 
-                             var_type='c', 
-                             reg_type='ll', 
-                             bw=[21],
-                             ckertype='gaussian')
-    kreg_brtaCFR_CrI_Low = KernelReg(endog=results['lower'], 
-                                     exog=np.arange(1,T+1), 
-                                     var_type='c', 
-                                     reg_type='ll', 
-                                     bw=[21], 
-                                     ckertype='gaussian')
-    kreg_brtaCFR_CrI_Up = KernelReg(endog=results['upper'], 
-                                    exog=np.arange(1,T+1), 
-                                    var_type='c', 
-                                    reg_type='ll', 
-                                    bw=[21], 
-                                    ckertype='gaussian')
-    
+    kreg_brtacfr = KernelReg(
+        endog=results["mean"],
+        exog=np.arange(1, T + 1),
+        var_type="c",
+        reg_type="ll",
+        bw=[21],
+        ckertype="gaussian",
+    )
+    kreg_brtaCFR_CrI_Low = KernelReg(
+        endog=results["lower"],
+        exog=np.arange(1, T + 1),
+        var_type="c",
+        reg_type="ll",
+        bw=[21],
+        ckertype="gaussian",
+    )
+    kreg_brtaCFR_CrI_Up = KernelReg(
+        endog=results["upper"],
+        exog=np.arange(1, T + 1),
+        var_type="c",
+        reg_type="ll",
+        bw=[21],
+        ckertype="gaussian",
+    )
+
     # Apply smoothing with non-negative constraint
-    smoothed_brtacfr = np.maximum(kreg_brtacfr.fit(np.arange(1,T+1))[0], 0)
-    smooth_brtacfr_CrIL = np.maximum(kreg_brtaCFR_CrI_Low.fit(np.arange(1,T+1))[0], 0)
-    smooth_brtacfr_CrIU = np.maximum(kreg_brtaCFR_CrI_Up.fit(np.arange(1,T+1))[0], 0)
+    smoothed_brtacfr = np.maximum(kreg_brtacfr.fit(np.arange(1, T + 1))[0], 0)
+    smooth_brtacfr_CrIL = np.maximum(kreg_brtaCFR_CrI_Low.fit(np.arange(1, T + 1))[0], 0)
+    smooth_brtacfr_CrIU = np.maximum(kreg_brtaCFR_CrI_Up.fit(np.arange(1, T + 1))[0], 0)
 
     # --- 3b. Calculate 7-day moving averages ---
     cases_ma7 = pd.Series(ct).rolling(window=7, min_periods=1, center=False).mean().values
@@ -183,141 +224,160 @@ def main():
 
     # --- 4. Generate and Save Final Plot (CFR Curves) ---
     def _style_cfr_ax(ax):
-        ax.set_title(f'Case Fatality Rate Estimators for {COUNTRY}', fontsize=16, fontweight='bold')
-        ax.set_xlabel('Date', fontsize=12, fontweight='bold')
-        ax.set_ylabel('Fatality Rate', fontsize=12, fontweight='bold')
-        ax.legend(loc='upper left')
-        ax.grid(True, which='both', linestyle='--', linewidth=0.5)
+        ax.set_title(f"Case Fatality Rate Estimators for {COUNTRY}", fontsize=16, fontweight="bold")
+        ax.set_xlabel("Date", fontsize=12, fontweight="bold")
+        ax.set_ylabel("Fatality Rate", fontsize=12, fontweight="bold")
+        ax.legend(loc="upper left")
+        ax.grid(True, which="both", linestyle="--", linewidth=0.5)
         ax.set_ylim(0, 0.15)
         ax.xaxis.set_major_locator(mdates.MonthLocator(bymonth=[1, 4, 7, 10]))
-        ax.xaxis.set_major_formatter(mdates.DateFormatter('%b %Y'))
-        ax.tick_params(axis='both', which='major', labelsize=11)
+        ax.xaxis.set_major_formatter(mdates.DateFormatter("%b %Y"))
+        ax.tick_params(axis="both", which="major", labelsize=11)
         for label in ax.get_xticklabels():
-            label.set_fontweight('bold')
+            label.set_fontweight("bold")
         for label in ax.get_yticklabels():
-            label.set_fontweight('bold')
+            label.set_fontweight("bold")
 
     # Smooth version
     fig, ax = plt.subplots(figsize=(14, 8))
-    ax.plot(dates, cCFR, color='green', label='cCFR')
-    ax.plot(dates, mCFR, color='orange', label='mCFR')
-    ax.plot(dates, smoothed_brtacfr, color='red', linestyle='--', linewidth=2, label='BrtaCFR (Smoothed)')
-    ax.fill_between(dates, smooth_brtacfr_CrIL, smooth_brtacfr_CrIU, color='blue', alpha=0.2, label='95% Credible Interval')
+    ax.plot(dates, cCFR, color="green", label="cCFR")
+    ax.plot(dates, mCFR, color="orange", label="mCFR")
+    ax.plot(
+        dates,
+        smoothed_brtacfr,
+        color="red",
+        linestyle="--",
+        linewidth=2,
+        label="BrtaCFR (Smoothed)",
+    )
+    ax.fill_between(
+        dates,
+        smooth_brtacfr_CrIL,
+        smooth_brtacfr_CrIU,
+        color="blue",
+        alpha=0.2,
+        label="95% Credible Interval",
+    )
     _style_cfr_ax(ax)
     plt.tight_layout()
-    plt.savefig(os.path.join(output_dir, 'covid_japan_cfr_curves_smooth.pdf'), dpi=300)
+    plt.savefig(os.path.join(output_dir, "covid_japan_cfr_curves_smooth.pdf"), dpi=300)
     print(f"Saved CFR plot (smooth) to {output_dir}/covid_japan_cfr_curves_smooth.pdf")
     plt.close()
 
     # Raw (non-smooth) version
     fig, ax = plt.subplots(figsize=(14, 8))
-    ax.plot(dates, cCFR, color='green', label='cCFR')
-    ax.plot(dates, mCFR, color='orange', label='mCFR')
-    ax.plot(dates, results['mean'], color='red', linestyle='-', linewidth=2, label='BrtaCFR')
-    ax.fill_between(dates, results['lower'], results['upper'], color='blue', alpha=0.2, label='95% Credible Interval')
+    ax.plot(dates, cCFR, color="green", label="cCFR")
+    ax.plot(dates, mCFR, color="orange", label="mCFR")
+    ax.plot(dates, results["mean"], color="red", linestyle="-", linewidth=2, label="BrtaCFR")
+    ax.fill_between(
+        dates,
+        results["lower"],
+        results["upper"],
+        color="blue",
+        alpha=0.2,
+        label="95% Credible Interval",
+    )
     _style_cfr_ax(ax)
     plt.tight_layout()
-    plt.savefig(os.path.join(output_dir, 'covid_japan_cfr_curves_raw.pdf'), dpi=300)
+    plt.savefig(os.path.join(output_dir, "covid_japan_cfr_curves_raw.pdf"), dpi=300)
     print(f"Saved CFR plot (raw) to {output_dir}/covid_japan_cfr_curves_raw.pdf")
     plt.close()
-    
+
     # --- 5. Generate Daily Cases and Deaths Plot ---
     fig2, ax1 = plt.subplots(figsize=(14, 8))
     ax1.plot(dates, ct, color="black", linewidth=1.1, label="Cases (daily)")
-    ax1.set_ylabel("Cases (daily)", color="black", fontsize=12, fontweight='bold')
-    ax1.tick_params(axis='y', labelcolor='black')
-    
+    ax1.set_ylabel("Cases (daily)", color="black", fontsize=12, fontweight="bold")
+    ax1.tick_params(axis="y", labelcolor="black")
+
     ax2 = ax1.twinx()
     ax2.plot(dates, dt, color="red", linewidth=1.1, label="Deaths (daily)")
-    ax2.set_ylabel("Deaths (daily)", color="red", fontsize=12, fontweight='bold')
-    ax2.tick_params(axis='y', labelcolor='red')
-    
-    ax1.set_title(f"COVID-19 ({COUNTRY}) — Daily Cases and Deaths", fontsize=16, fontweight='bold')
-    ax1.set_xlabel("Date", fontsize=12, fontweight='bold')
-    ax1.grid(True, linestyle='--', linewidth=0.5, alpha=0.6)
+    ax2.set_ylabel("Deaths (daily)", color="red", fontsize=12, fontweight="bold")
+    ax2.tick_params(axis="y", labelcolor="red")
+
+    ax1.set_title(f"COVID-19 ({COUNTRY}) — Daily Cases and Deaths", fontsize=16, fontweight="bold")
+    ax1.set_xlabel("Date", fontsize=12, fontweight="bold")
+    ax1.grid(True, linestyle="--", linewidth=0.5, alpha=0.6)
     ax1.xaxis.set_major_locator(mdates.MonthLocator(bymonth=[1, 4, 7, 10]))
-    ax1.xaxis.set_major_formatter(mdates.DateFormatter('%b %Y'))
-    
+    ax1.xaxis.set_major_formatter(mdates.DateFormatter("%b %Y"))
+
     # Bold tick labels
-    ax1.tick_params(axis='both', which='major', labelsize=11)
-    ax2.tick_params(axis='both', which='major', labelsize=11)
+    ax1.tick_params(axis="both", which="major", labelsize=11)
+    ax2.tick_params(axis="both", which="major", labelsize=11)
     for label in ax1.get_xticklabels():
-        label.set_fontweight('bold')
+        label.set_fontweight("bold")
     for label in ax1.get_yticklabels():
-        label.set_fontweight('bold')
+        label.set_fontweight("bold")
     for label in ax2.get_yticklabels():
-        label.set_fontweight('bold')
-    
+        label.set_fontweight("bold")
+
     fig2.autofmt_xdate()
     plt.tight_layout()
-    plt.savefig(os.path.join(output_dir, 'covid_japan_cases_deaths_daily.pdf'), dpi=300)
+    plt.savefig(os.path.join(output_dir, "covid_japan_cases_deaths_daily.pdf"), dpi=300)
     print(f"Saved daily cases/deaths plot to {output_dir}/covid_japan_cases_deaths_daily.pdf")
     plt.close()
-    
+
     # --- 6. Generate 7-day Moving Averages Plot ---
     fig3, ax1 = plt.subplots(figsize=(14, 8))
     ax1.plot(dates, cases_ma7, color="black", linewidth=1.8, label="Cases: 7-day Moving Average")
-    ax1.set_ylabel("Cases: 7-day Moving Average", color="black", fontsize=12, fontweight='bold')
-    ax1.tick_params(axis='y', labelcolor='black')
-    
+    ax1.set_ylabel("Cases: 7-day Moving Average", color="black", fontsize=12, fontweight="bold")
+    ax1.tick_params(axis="y", labelcolor="black")
+
     ax2 = ax1.twinx()
-    ax2.plot(dates, deaths_ma7, color="red", linewidth=2.0,
-             label="Deaths: 7-day Moving Average")
-    ax2.set_ylabel("Deaths: 7-day Moving Average", color="red", fontsize=12, fontweight='bold')
-    ax2.tick_params(axis='y', labelcolor='red')
-    
-    ax1.set_title(f"COVID-19 ({COUNTRY}) — 7-day Moving Averages", fontsize=16, fontweight='bold')
-    ax1.set_xlabel("Date", fontsize=12, fontweight='bold')
-    ax1.grid(True, linestyle='--', linewidth=0.5, alpha=0.6)
+    ax2.plot(dates, deaths_ma7, color="red", linewidth=2.0, label="Deaths: 7-day Moving Average")
+    ax2.set_ylabel("Deaths: 7-day Moving Average", color="red", fontsize=12, fontweight="bold")
+    ax2.tick_params(axis="y", labelcolor="red")
+
+    ax1.set_title(f"COVID-19 ({COUNTRY}) — 7-day Moving Averages", fontsize=16, fontweight="bold")
+    ax1.set_xlabel("Date", fontsize=12, fontweight="bold")
+    ax1.grid(True, linestyle="--", linewidth=0.5, alpha=0.6)
     ax1.xaxis.set_major_locator(mdates.MonthLocator(bymonth=[1, 4, 7, 10]))
-    ax1.xaxis.set_major_formatter(mdates.DateFormatter('%b %Y'))
-    
+    ax1.xaxis.set_major_formatter(mdates.DateFormatter("%b %Y"))
+
     # Bold tick labels
-    ax1.tick_params(axis='both', which='major', labelsize=11)
-    ax2.tick_params(axis='both', which='major', labelsize=11)
+    ax1.tick_params(axis="both", which="major", labelsize=11)
+    ax2.tick_params(axis="both", which="major", labelsize=11)
     for label in ax1.get_xticklabels():
-        label.set_fontweight('bold')
+        label.set_fontweight("bold")
     for label in ax1.get_yticklabels():
-        label.set_fontweight('bold')
+        label.set_fontweight("bold")
     for label in ax2.get_yticklabels():
-        label.set_fontweight('bold')
-    
+        label.set_fontweight("bold")
+
     # Unified legend
     lines1, labels1 = ax1.get_legend_handles_labels()
     lines2, labels2 = ax2.get_legend_handles_labels()
     ax1.legend(lines1 + lines2, labels1 + labels2, loc="upper left", fontsize=11)
-    
+
     fig3.autofmt_xdate()
     plt.tight_layout()
-    plt.savefig(os.path.join(output_dir, 'covid_japan_cases_deaths_ma7.pdf'), dpi=300)
+    plt.savefig(os.path.join(output_dir, "covid_japan_cases_deaths_ma7.pdf"), dpi=300)
     print(f"Saved 7-day MA plot to {output_dir}/covid_japan_cases_deaths_ma7.pdf")
     plt.close()
-    
+
     # --- 7. Save all curves to CSV for further analysis ---
-    curves_df = pd.DataFrame({
-        'date': dates.dt.date.astype(str),
-        'cases_daily': ct,
-        'deaths_daily': dt,
-        'cases_ma7': cases_ma7,
-        'deaths_ma7': deaths_ma7,
-        'cCFR': cCFR,
-        'mCFR': mCFR,
-        'BrtaCFR_mean_raw': results['mean'],
-        'BrtaCFR_lower_raw': results['lower'],
-        'BrtaCFR_upper_raw': results['upper'],
-        'BrtaCFR_mean_smooth': smoothed_brtacfr,
-        'BrtaCFR_lower_smooth': smooth_brtacfr_CrIL,
-        'BrtaCFR_upper_smooth': smooth_brtacfr_CrIU
-    })
-    curves_df.to_csv(os.path.join(output_dir, 'covid_japan_derived_timeseries.csv'), index=False)
-    
+    curves_df = pd.DataFrame(
+        {
+            "date": dates.dt.date.astype(str),
+            "cases_daily": ct,
+            "deaths_daily": dt,
+            "cases_ma7": cases_ma7,
+            "deaths_ma7": deaths_ma7,
+            "cCFR": cCFR,
+            "mCFR": mCFR,
+            "BrtaCFR_mean_raw": results["mean"],
+            "BrtaCFR_lower_raw": results["lower"],
+            "BrtaCFR_upper_raw": results["upper"],
+            "BrtaCFR_mean_smooth": smoothed_brtacfr,
+            "BrtaCFR_lower_smooth": smooth_brtacfr_CrIL,
+            "BrtaCFR_upper_smooth": smooth_brtacfr_CrIU,
+        }
+    )
+    curves_df.to_csv(os.path.join(output_dir, "covid_japan_derived_timeseries.csv"), index=False)
+
     # --- 8. Save delay distribution PMF to CSV ---
-    pmf_df = pd.DataFrame({
-        'day': np.arange(1, len(delay_dist_pmf) + 1),
-        'f_k': delay_dist_pmf
-    })
-    pmf_df.to_csv(os.path.join(output_dir, 'covid_japan_delay_pmf.csv'), index=False)
-    
+    pmf_df = pd.DataFrame({"day": np.arange(1, len(delay_dist_pmf) + 1), "f_k": delay_dist_pmf})
+    pmf_df.to_csv(os.path.join(output_dir, "covid_japan_delay_pmf.csv"), index=False)
+
     print(f"\nAll outputs saved to '{output_dir}/' directory:")
     print("  - covid_japan_lambda_summary.csv (posterior lambda: median, q025, q975)")
     print("  - covid_japan_cfr_curves_smooth.pdf")
@@ -326,8 +386,9 @@ def main():
     print("  - covid_japan_cases_deaths_ma7.pdf")
     print("  - covid_japan_derived_timeseries.csv (all curves with date index)")
     print("  - covid_japan_delay_pmf.csv (delay distribution)")
-    
+
     plt.show()
-    
-if __name__ == '__main__':
+
+
+if __name__ == "__main__":
     main()

@@ -34,11 +34,11 @@ Author: BrtaCFR Team
 Date: October 2025
 """
 
+import argparse
 import os
+import pickle
 import sys
 import time
-import pickle
-import argparse
 import warnings
 
 # Configure PyTensor BEFORE any imports that use it
@@ -48,20 +48,21 @@ os.environ["PYTENSOR_FLAGS"] = "optimizer=fast_compile,exception_verbosity=low"
 warnings.filterwarnings("ignore", message=".*PyTensor could not link to a BLAS.*")
 warnings.filterwarnings("ignore", category=UserWarning, module="pytensor")
 
-import numpy as np
-import pandas as pd
-import matplotlib.pyplot as plt
 from datetime import datetime
 from pathlib import Path
+
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
 from joblib import Parallel, delayed
-from tqdm import tqdm
-from scipy.stats import gamma, weibull_min, lognorm
-from scipy.special import gamma as gamma_func
-from scipy.optimize import fsolve
 from scipy import stats
+from scipy.optimize import fsolve
+from scipy.special import gamma as gamma_func
+from scipy.stats import gamma, lognorm, weibull_min
+from tqdm import tqdm
 
 # Import core methods
-from methods import BrtaCFR_estimator, mCFR_EST, logp, lambda_summary_stats
+from methods import BrtaCFR_estimator, lambda_summary_stats, logp, mCFR_EST
 
 # =============================================================================
 # Helper Functions
@@ -1545,8 +1546,8 @@ def run_brtacfr_mcmc(c_t, d_t, F_paras, n_samples=500, n_chains=2, tune=500, lam
     - NUTS sampler (default, more robust than MH)
     """
     # Lazy imports so plotting-only runs can succeed without PyMC stack.
-    import pymc as pm
     import arviz as az
+    import pymc as pm
 
     T = len(c_t)
     mean_delay, shape_delay = F_paras

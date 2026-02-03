@@ -11,7 +11,7 @@ BrtaCFR is a Bayesian framework for real-time estimation of time-varying case fa
 - **Six epidemic scenarios**: Constant, exponential growth, delayed growth, decay, peak, valley
 - **Benchmarks**: Comparison with cCFR and mCFR; optional MCMC vs ADVI comparison
 - **Diagnostics**: ELBO traces, MAE, and PPC for expected and observed deaths
-- **Sensitivity**: Gamma delay, prior variance (σ), delay distribution, and lambda prior
+- **Sensitivity**: Gamma delay, prior variance (σ), delay distribution, and lambda analysis (prior predictive and scale sensitivity)
 - **Real-data applications**: COVID-19 examples for Germany (JHU CSSE) and Japan (WHO)
 
 ## Installation
@@ -62,7 +62,7 @@ python run_application_covid_JP.py --save_lambda_summary --lambda_scale 1.0
 ### Simulation framework
 
 ```bash
-# Run only main analysis (or sensitivity / mcmc / lambda)
+# Run only main analysis, sensitivity, MCMC comparison, or lambda analysis
 python run_all_simulations.py --only main
 python run_all_simulations.py --only sensitivity
 python run_all_simulations.py --only mcmc
@@ -102,7 +102,7 @@ Replication counts and paths are set in `DEFAULT_CONFIG` and `DEMO_CONFIG`:
 | `output_dir`       | `./outputs` | `./outputs_demo` |
 | `checkpoint_dir`   | `./checkpoints` | `./checkpoints_demo` |
 
-Prior predictive smoothness uses a fixed **500 draws** per (scenario, λ scale) (`N_PRIOR_DRAWS`), independent of demo/full.
+Lambda analysis (prior predictive smoothness) uses a fixed **500 draws** per (scenario, λ scale) (`N_PRIOR_DRAWS`), independent of demo/full.
 
 ## Output Files
 
@@ -110,7 +110,7 @@ Prior predictive smoothness uses a fixed **500 draws** per (scenario, λ scale) 
 
 - **Main:** `simulation.pdf`, `fig_sim_curvelevel_coverage_pt_mut.pdf`, `curvelevel_coverage_summary.csv`, `lambda_summary_sim.csv` (.tex), `elbo_traces.pdf`, `mae_and_ppc.pdf`, `mae_and_ppc_death_counts.pdf`, `simulation_table_results.csv`, `simulation_table_latex.tex`
 - **Sensitivity:** `sensitivity_gamma.pdf`, `sensitivity_sigma.pdf`, `sensitivity_distributions.pdf`, `sensitivity_analysis_summary.csv`
-- **Lambda:** `fig_prior_predictive_smoothness.pdf`, `prior_pred_smoothness.csv`, `fig_lambda_scale_sensitivity.pdf`, `mae_by_lambda_scale.csv`
+- **Lambda analysis:** `fig_prior_predictive_smoothness.pdf`, `prior_pred_smoothness.csv`, `fig_lambda_scale_sensitivity.pdf`, `mae_by_lambda_scale.csv`
 - **MCMC vs ADVI:** `mcmc_vs_advi_comparison.pdf`, `mcmc_vs_advi_comparison.csv` (and curve-level coverage appended to `curvelevel_coverage_summary.csv`)
 
 ### Real-data applications (output_application/)
