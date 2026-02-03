@@ -51,6 +51,26 @@ def logp(value, mu, lam, sigma, T):
 # Helper Function for mCFR Calculation
 # =============================================================================
 
+def lambda_summary_stats(draws):
+    """
+    Compute median and 95% CrI (2.5%, 97.5%) from a 1D array of lambda draws.
+    
+    Args:
+        draws (np.ndarray): 1D array of posterior/variational draws for lambda.
+    
+    Returns:
+        tuple: (median, q025, q975). Returns (None, None, None) if draws is empty or None.
+    """
+    if draws is None or len(draws) == 0:
+        return (None, None, None)
+    draws = np.asarray(draws).flatten()
+    return (
+        float(np.median(draws)),
+        float(np.quantile(draws, 0.025)),
+        float(np.quantile(draws, 0.975)),
+    )
+
+
 def mCFR_EST(c_t, d_t, f_k):
     """
     Estimates the modified Case Fatality Rate (mCFR).
@@ -76,7 +96,7 @@ def mCFR_EST(c_t, d_t, f_k):
 # Main BrtaCFR Estimator Function
 # =============================================================================
 
-def BrtaCFR_estimator(c_t, d_t, F_paras):
+def BrtaCFR_estimator(c_t, d_t, F_paras, lambda_scale=1.0, n_draws=1000):
     """
     Estimates the Bayesian real-time adjusted Case Fatality Rate (BrtaCFR).
 
@@ -87,10 +107,12 @@ def BrtaCFR_estimator(c_t, d_t, F_paras):
         c_t (np.array): Time series of daily confirmed cases.
         d_t (np.array): Time series of daily deaths.
         F_paras (tuple): Parameters (mean, shape) for the Gamma delay distribution.
+        lambda_scale (float): Scale (beta) for the half-Cauchy prior on lambda; default 1.0.
+        n_draws (int): Number of posterior draws to sample (default 1000).
 
     Returns:
         dict: A dictionary containing the posterior mean, 95% credible intervals,
-              and the full posterior samples for the fatality rate p_t.
+              and optionally lambda_draws (1D array) when inference succeeds.
     """
     # Lazy import so scripts that only need plotting/checkpoint reading can run
     # even if PyMC/PyTensor are unavailable or mismatched.
@@ -128,8 +150,8 @@ def BrtaCFR_estimator(c_t, d_t, F_paras):
         if not np.all(np.isfinite(beta_tilde)):
             beta_tilde = np.nan_to_num(beta_tilde, nan=0.0, posinf=5.0, neginf=-5.0)
         
-        # Hyperprior for the smoothing parameter lambda
-        lambda_param = pm.HalfCauchy('lambda', beta=1.0)
+        # Hyperprior for the smoothing parameter lambda: λ ~ HalfCauchy(0, lambda_scale)
+        lambda_param = pm.HalfCauchy('lambda', beta=lambda_scale)
         
         # Priors for beta_t
         beta = pm.CustomDist('beta',
@@ -141,7 +163,7 @@ def BrtaCFR_estimator(c_t, d_t, F_paras):
         p_t = pm.Deterministic('p_t', pm.math.sigmoid(beta))
     
         # Calculate expected deaths mu_t (convolution)
-        mu_t = pm.math.dot(fc_mat, p_t)
+        mu_t = pm.Deterministic('mu_t', pm.math.dot(fc_mat, p_t))
         
         # Likelihood
         pm.Poisson('deaths', mu=mu_t, observed=d_t)
@@ -156,20 +178,42 @@ def BrtaCFR_estimator(c_t, d_t, F_paras):
                            progressbar=True)
             
         # Draw samples from the approximated posterior distribution
-        idata = approx.sample(draws=1000, random_seed=2025)
+        idata = approx.sample(draws=n_draws, random_seed=2025)
         
         # --- 4. Extract and Return Results ---
         BrtaCFR_est = idata.posterior['p_t'].mean(dim=('chain', 'draw')).values
         CrI = idata.posterior['p_t'].quantile([0.025, 0.975], dim=('chain', 'draw')).values
+        lambda_draws = idata.posterior['lambda'].values.flatten()
+        p_samples = idata.posterior['p_t'].values.reshape(-1, T)
+        # ADVI approx.sample() may omit Deterministics; compute mu_t from p_t if missing
+        if 'mu_t' in idata.posterior:
+            mu_samples = idata.posterior['mu_t'].values.reshape(-1, T)
+        else:
+            mu_samples = (fc_mat @ p_samples.T).T  # (n_draws, T), same as model: mu_t = fc_mat @ p_t
         
         # Check for NaN in results
         if not np.all(np.isfinite(BrtaCFR_est)):
             raise ValueError("NaN in posterior estimates")
         
+        # R4-8: CrI at 50%, 80%, 95% for curve-level coverage
+        pt_cri = {
+            0.50: (np.quantile(p_samples, 0.25, axis=0), np.quantile(p_samples, 0.75, axis=0)),
+            0.80: (np.quantile(p_samples, 0.10, axis=0), np.quantile(p_samples, 0.90, axis=0)),
+            0.95: (np.quantile(p_samples, 0.025, axis=0), np.quantile(p_samples, 0.975, axis=0)),
+        }
+        mut_cri = {
+            0.50: (np.quantile(mu_samples, 0.25, axis=0), np.quantile(mu_samples, 0.75, axis=0)),
+            0.80: (np.quantile(mu_samples, 0.10, axis=0), np.quantile(mu_samples, 0.90, axis=0)),
+            0.95: (np.quantile(mu_samples, 0.025, axis=0), np.quantile(mu_samples, 0.975, axis=0)),
+        }
+        
         results = {
             'mean': BrtaCFR_est,
             'lower': CrI[0, :],
-            'upper': CrI[1, :]
+            'upper': CrI[1, :],
+            'lambda_draws': lambda_draws,
+            'pt_cri': pt_cri,
+            'mut_cri': mut_cri,
         }
         
         return results
@@ -181,5 +225,8 @@ def BrtaCFR_estimator(c_t, d_t, F_paras):
         return {
             'mean': mCFR_result,
             'lower': mCFR_result * 0.5,
-            'upper': mCFR_result * 1.5
+            'upper': mCFR_result * 1.5,
+            'lambda_draws': None,
+            'pt_cri': None,
+            'mut_cri': None,
         }

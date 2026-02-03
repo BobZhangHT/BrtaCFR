@@ -10,11 +10,13 @@ Reference:
 """
 
 import warnings
+import argparse
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 import os
+from pathlib import Path
 from scipy.stats import gamma
 from statsmodels.nonparametric.kernel_regression import KernelReg
 from datetime import datetime, date
@@ -24,7 +26,7 @@ warnings.filterwarnings('ignore', message='.*PyTensor could not link to a BLAS.*
 warnings.filterwarnings('ignore', category=UserWarning, module='pytensor')
 
 # Import the core estimator function and the mCFR helper
-from methods import BrtaCFR_estimator, mCFR_EST
+from methods import BrtaCFR_estimator, mCFR_EST, lambda_summary_stats
 
 # =============================================================================
 # Global Parameters
@@ -205,6 +207,13 @@ def main():
     5. Generates and saves the final plots.
     6. Saves all curves to CSV for further analysis.
     """
+    parser = argparse.ArgumentParser(description='BrtaCFR real-data application: Germany')
+    parser.add_argument('--lambda_scale', type=float, default=1.0,
+                        help='Half-Cauchy scale for lambda prior (default: 1.0)')
+    parser.add_argument('--save_lambda_summary', action='store_true',
+                        help='Save posterior lambda summary to outputs/lambda_summary/')
+    args = parser.parse_args()
+    
     # --- 0. Create output directory and define local file paths ---
     output_dir = "output_application"
     os.makedirs(output_dir, exist_ok=True)
@@ -302,9 +311,36 @@ def main():
     print(f"  Progress bar will appear below:")
     
     F_paras_default = (15.43, 2.03)
-    # Use the default delay distribution parameters from the manuscript
-    results = BrtaCFR_estimator(ct, dt, F_paras_default)
+    n_draws = 5000 if args.save_lambda_summary else 1000
+    results = BrtaCFR_estimator(ct, dt, F_paras_default, lambda_scale=args.lambda_scale, n_draws=n_draws)
     print("\n✓ BrtaCFR estimation complete.")
+
+    # Report and store posterior lambda summary (median, q025, q975) whenever available
+    if results.get("lambda_draws") is not None:
+        lam_med, lam_q025, lam_q975 = lambda_summary_stats(results["lambda_draws"])
+        print(f"  Posterior lambda: median = {lam_med:.4f}, 95% CrI [q025, q975] = [{lam_q025:.4f}, {lam_q975:.4f}]")
+        Path(output_dir).mkdir(parents=True, exist_ok=True)
+        lambda_summary_df = pd.DataFrame(
+            [{"dataset": COUNTRY, "lambda_median": lam_med, "lambda_q025": lam_q025, "lambda_q975": lam_q975}]
+        )
+        lambda_summary_path = Path(output_dir) / "covid_germany_lambda_summary.csv"
+        lambda_summary_df.to_csv(lambda_summary_path, index=False)
+        print(f"  [OK] Lambda summary saved to {lambda_summary_path}")
+
+    if args.save_lambda_summary and results.get('lambda_draws') is not None:
+        Path(output_dir).mkdir(parents=True, exist_ok=True)
+        row = {'dataset': 'Germany', 'lambda_median': lam_med, 'lambda_q025': lam_q025, 'lambda_q975': lam_q975}
+        csv_path = Path(output_dir) / 'lambda_summary_real.csv'
+        if csv_path.exists():
+            df_real = pd.read_csv(csv_path)
+            df_real = df_real[df_real['dataset'] != 'Germany']
+            df_real = pd.concat([df_real, pd.DataFrame([row])], ignore_index=True)
+        else:
+            df_real = pd.DataFrame([row])
+        df_real.to_csv(csv_path, index=False)
+        with open(Path(output_dir) / 'lambda_summary_real.tex', 'w') as f:
+            f.write(df_real.to_latex(index=False, float_format='%.4f'))
+        print(f"  [OK] Lambda summary saved to {csv_path}")
 
     # Calculate cCFR and mCFR for comparison
     delay_dist_pmf = get_delay_dist_pmf(F_paras_default, len(ct))
@@ -376,38 +412,44 @@ def main():
     print(f"\n{'='*80}")
     print("Generating Plots")
     print(f"{'='*80}")
-    
-    fig, ax = plt.subplots(figsize=(14, 8))
 
-    # Plot the different estimators
+    def _style_cfr_ax(ax):
+        ax.set_title(f'Case Fatality Rate Estimators for {COUNTRY}', fontsize=16, fontweight='bold')
+        ax.set_xlabel('Date', fontsize=12, fontweight='bold')
+        ax.set_ylabel('Fatality Rate', fontsize=12, fontweight='bold')
+        ax.legend(loc='upper left')
+        ax.grid(True, which='both', linestyle='--', linewidth=0.5)
+        ax.set_ylim(0, 0.15)
+        ax.xaxis.set_major_locator(mdates.MonthLocator(bymonth=[1, 4, 7, 10]))
+        ax.xaxis.set_major_formatter(mdates.DateFormatter('%b %Y'))
+        ax.tick_params(axis='both', which='major', labelsize=11)
+        for label in ax.get_xticklabels():
+            label.set_fontweight('bold')
+        for label in ax.get_yticklabels():
+            label.set_fontweight('bold')
+
+    # Smooth version
+    fig, ax = plt.subplots(figsize=(14, 8))
     ax.plot(dates, cCFR, color='green', label='cCFR')
     ax.plot(dates, mCFR, color='orange', label='mCFR')
     ax.plot(dates, smoothed_brtacfr, color='red', linestyle='--', linewidth=2, label='BrtaCFR (Smoothed)')
     ax.fill_between(dates, smooth_brtacfr_CrIL, smooth_brtacfr_CrIU, color='blue', alpha=0.2, label='95% Credible Interval')
-
-    # Final plot styling
-    ax.set_title(f'Case Fatality Rate Estimators for {COUNTRY}', fontsize=16, fontweight='bold')
-    ax.set_xlabel('Date', fontsize=12, fontweight='bold')
-    ax.set_ylabel('Fatality Rate', fontsize=12, fontweight='bold')
-    ax.legend(loc='upper left')
-    ax.grid(True, which='both', linestyle='--', linewidth=0.5)
-    ax.set_ylim(0, 0.15)
-
-    # Format the x-axis to show dates clearly
-    ax.xaxis.set_major_locator(mdates.MonthLocator(bymonth=[1, 4, 7, 10]))
-    ax.xaxis.set_major_formatter(mdates.DateFormatter('%b %Y'))
-    
-    # Bold tick labels
-    ax.tick_params(axis='both', which='major', labelsize=11)
-    for label in ax.get_xticklabels():
-        label.set_fontweight('bold')
-    for label in ax.get_yticklabels():
-        label.set_fontweight('bold')
-    
-    # Save the figure
+    _style_cfr_ax(ax)
     plt.tight_layout()
-    plt.savefig(os.path.join(output_dir, 'covid_germany_cfr_curves.pdf'), dpi=300)
-    print(f"✓ Saved CFR plot to {output_dir}/covid_germany_cfr_curves.pdf")
+    plt.savefig(os.path.join(output_dir, 'covid_germany_cfr_curves_smooth.pdf'), dpi=300)
+    print(f"✓ Saved CFR plot (smooth) to {output_dir}/covid_germany_cfr_curves_smooth.pdf")
+    plt.close()
+
+    # Raw (non-smooth) version
+    fig, ax = plt.subplots(figsize=(14, 8))
+    ax.plot(dates, cCFR, color='green', label='cCFR')
+    ax.plot(dates, mCFR, color='orange', label='mCFR')
+    ax.plot(dates, results['mean'], color='red', linestyle='-', linewidth=2, label='BrtaCFR')
+    ax.fill_between(dates, results['lower'], results['upper'], color='blue', alpha=0.2, label='95% Credible Interval')
+    _style_cfr_ax(ax)
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_dir, 'covid_germany_cfr_curves_raw.pdf'), dpi=300)
+    print(f"✓ Saved CFR plot (raw) to {output_dir}/covid_germany_cfr_curves_raw.pdf")
     plt.close()
     
     # --- 8. Generate Daily Cases and Deaths Plot ---
@@ -525,7 +567,9 @@ def main():
     print(f"  doi: 10.1016/S1473-3099(20)30120-1")
     print(f"  URL: https://github.com/CSSEGISandData/COVID-19")
     print(f"\nAll outputs saved to '{output_dir}/' directory:")
-    print("  - covid_germany_cfr_curves.pdf")
+    print("  - covid_germany_lambda_summary.csv (posterior lambda: median, q025, q975)")
+    print("  - covid_germany_cfr_curves_smooth.pdf")
+    print("  - covid_germany_cfr_curves_raw.pdf")
     print("  - covid_germany_cases_deaths_daily.pdf")
     print("  - covid_germany_cases_deaths_ma7.pdf")
     print("  - covid_germany_derived_timeseries.csv (all curves with date index)")

@@ -2,200 +2,142 @@
 
 ## Overview
 
-BrtaCFR is a comprehensive Bayesian framework for real-time estimation of case fatality rates (CFR) from epidemic surveillance data. The method employs Automatic Differentiation Variational Inference (ADVI) to deliver rapid, uncertainty-quantified estimates of time-varying fatality rates with robust credible intervals, enabling timely public health decision-making during epidemic outbreaks.
+BrtaCFR is a Bayesian framework for real-time estimation of time-varying case fatality rates (CFR) from epidemic surveillance data. It uses Automatic Differentiation Variational Inference (ADVI) to provide fast, uncertainty-quantified CFR estimates with credible intervals, supporting timely public health decisions during outbreaks.
 
 ## Key Features
 
-- **Real-time Estimation**: Provides CFR estimates as surveillance data becomes available
-- **Uncertainty Quantification**: Bayesian credible intervals for all estimates with comprehensive diagnostic validation
-- **Multiple Epidemic Patterns**: Handles diverse epidemic scenarios including constant, exponential growth, delayed growth, decay, peak, and valley patterns
-- **Comparative Benchmarking**: Systematic evaluation against conventional CFR (cCFR) and modified CFR (mCFR) methods
-- **Comprehensive Diagnostics**: ELBO trace monitoring and posterior predictive checks
-- **Real-world Applications**: Validated on COVID-19 data from multiple countries with practical implementation examples
+- **Real-time estimation**: CFR estimates and 95% credible intervals as data arrive
+- **Uncertainty quantification**: Curve-level coverage (50%, 80%, 95% CrI) and posterior predictive checks
+- **Six epidemic scenarios**: Constant, exponential growth, delayed growth, decay, peak, valley
+- **Benchmarks**: Comparison with cCFR and mCFR; optional MCMC vs ADVI comparison
+- **Diagnostics**: ELBO traces, MAE, and PPC for expected and observed deaths
+- **Sensitivity**: Gamma delay, prior variance (σ), delay distribution, and lambda prior
+- **Real-data applications**: COVID-19 examples for Germany (JHU CSSE) and Japan (WHO)
 
 ## Installation
 
 ### Prerequisites
 
-- Python 3.8 or higher
-- Required packages: numpy, scipy, matplotlib, pandas, pymc, arviz, tqdm, joblib
+- Python 3.8+
+- Dependencies are listed in `requirements.txt`.
 
 ### Setup
 
 ```bash
-# Clone the repository
 git clone https://github.com/yourusername/BrtaCFR.git
 cd BrtaCFR
-
-# Install dependencies
 pip install -r requirements.txt
 ```
 
+**Note:** NumPy 2.0.x is incompatible with PyTensor (missing `numpy.lib.array_utils`). The requirements pin `numpy>=1.23.0,<2.0.0`. If you prefer NumPy 2, use `numpy>=2.1` with recent PyMC/PyTensor.
+
 ## Quick Start
 
-### Demo Mode (Recommended for first-time users)
+### Simulation (demo vs full)
 
 ```bash
-# Run demo analysis (2 replications for quick testing)
+# Demo: 2 replications per analysis, outputs in outputs_demo/
 python run_all_simulations.py --demo
 
-# Run full analysis
+# Full: 1000 main, 100 sensitivity, 10 MCMC replications; outputs in outputs/
 python run_all_simulations.py
 ```
 
-### Real-world Data Applications
+### Real-data applications
 
 ```bash
-# Analyze COVID-19 data from Germany
+# Germany (JHU CSSE data); outputs in output_application/
 python run_application_covid_GER.py
 
-# Analyze COVID-19 data from Japan
+# Japan (WHO data)
 python run_application_covid_JP.py
+
+# Optional: save posterior lambda summary (median, q025, q975) and use 5000 draws
+python run_application_covid_GER.py --save_lambda_summary --lambda_scale 1.0
+python run_application_covid_JP.py --save_lambda_summary --lambda_scale 1.0
 ```
 
 ## Usage
 
-### Basic Analysis
+### Simulation framework
 
-```python
-from run_all_simulations import run_brtacfr_with_diagnostics
+```bash
+# Run only main analysis (or sensitivity / mcmc / lambda)
+python run_all_simulations.py --only main
+python run_all_simulations.py --only sensitivity
+python run_all_simulations.py --only mcmc
+python run_all_simulations.py --only lambda --do_prior_predictive --do_lambda_sensitivity
 
-# Example epidemic data
-c_t = [10, 15, 20, 25, 30, 35, 40, 45, 50]  # cumulative cases
-d_t = [1, 2, 3, 4, 5, 6, 7, 8, 9]           # cumulative deaths
-F_paras = (7.0, 2.0)  # delay distribution parameters (mean, shape)
-
-# Run BrtaCFR analysis
-results = run_brtacfr_with_diagnostics(c_t, d_t, F_paras)
-
-# Access results
-print(f"CFR estimate: {results['mean']}")
-print(f"95% Credible Interval: [{results['lower']}, {results['upper']}]")
-print(f"Runtime: {results['runtime']:.2f} seconds")
+# Limit parallel jobs and clear checkpoints to restart
+python run_all_simulations.py --n-jobs 8
+python run_all_simulations.py --clear-checkpoints
 ```
 
-### Complete Analysis Pipeline
+### Using the estimator in code
 
 ```python
-from run_all_simulations import run_main_analysis, plot_main_analysis, CheckpointManager
+from methods import BrtaCFR_estimator, mCFR_EST
 
-# Run complete simulation study
-config = {
-    'main_reps': 100,
-    'sensitivity_reps': 50,
-    'mcmc_reps': 20,
-    'n_jobs': 8,
-    'checkpoint_dir': './checkpoints'
-}
+# Daily cases and deaths (numpy arrays)
+c_t = ...   # daily new cases, length T
+d_t = ...   # daily new deaths, length T
+F_paras = (15.43, 2.03)  # delay distribution (mean, shape) for Gamma
 
-# Initialize checkpoint manager
-checkpoint_mgr = CheckpointManager(config['checkpoint_dir'])
+results = BrtaCFR_estimator(c_t, d_t, F_paras, lambda_scale=1.0, n_draws=1000)
 
-# Execute analysis
-main_results = run_main_analysis(config, checkpoint_mgr, resume=False)
-
-# Generate publication-ready plots
-plot_main_analysis(main_results, './outputs')
+# results: mean, lower, upper (95% CrI); optional lambda_draws, pt_cri, mut_cri
+print(results["mean"])
+print(results["lower"], results["upper"])
 ```
 
-### Real-world Data Analysis
+### Configuration (run_all_simulations.py)
 
-```python
-# Example: Analyzing COVID-19 data from Germany
-from run_application_covid_GER import analyze_germany_data
+Replication counts and paths are set in `DEFAULT_CONFIG` and `DEMO_CONFIG`:
 
-# Load and analyze real COVID-19 data
-results = analyze_germany_data()
+| Config key         | Full  | Demo |
+|--------------------|-------|------|
+| `main_reps`        | 1000  | 2    |
+| `sensitivity_reps`| 100   | 2    |
+| `mcmc_reps`        | 10    | 2    |
+| `output_dir`       | `./outputs` | `./outputs_demo` |
+| `checkpoint_dir`   | `./checkpoints` | `./checkpoints_demo` |
 
-# Access time-varying CFR estimates
-print(f"Latest CFR estimate: {results['latest_cfr']:.4f}")
-print(f"95% Credible Interval: {results['credible_interval']}")
-```
-
-### Custom Scenario Analysis
-
-```python
-from run_all_simulations import SCENARIOS, run_brtacfr_with_diagnostics
-import numpy as np
-
-# Define custom scenario
-custom_scenario = {
-    'name': 'Custom Pattern',
-    'pt': lambda t: 0.05 + 0.02 * np.sin(t/10),  # time-varying CFR
-    'T': 200
-}
-
-# Run analysis for specific time points
-T = 200
-t_range = np.arange(1, T+1)
-pt_true = custom_scenario['pt'](t_range)
-
-# Generate synthetic data
-np.random.seed(42)
-c_t = np.random.poisson(10, T)
-d_t = np.random.poisson(pt_true * 10, T)
-
-# Run BrtaCFR
-F_paras = (7.0, 2.0)  # delay distribution parameters
-results = run_brtacfr_with_diagnostics(c_t, d_t, F_paras)
-```
-
-### Configuration
-
-Modify `DEMO_CONFIG` in `run_all_simulations.py`:
-
-```python
-DEMO_CONFIG = {
-    'main_reps': 100,        # Number of replications
-    'sensitivity_reps': 50,  # Sensitivity analysis replications
-    'mcmc_reps': 20,         # MCMC comparison replications
-    'n_jobs': 8,             # Parallel processing (recommended: 8 cores)
-    'checkpoint_dir': './checkpoints',  # Checkpoint directory
-}
-```
+Prior predictive smoothness uses a fixed **500 draws** per (scenario, λ scale) (`N_PRIOR_DRAWS`), independent of demo/full.
 
 ## Output Files
 
-The analysis generates comprehensive output files organized by analysis type:
+### Simulation (outputs/ or outputs_demo/)
 
-### Simulation Results
-- `simulation.pdf`: Main results showing CFR estimates across all scenarios
-- `elbo_traces.pdf`: ADVI convergence diagnostics with ELBO trace plots
-- `mae_and_ppc.pdf`: Mean Absolute Error boxplots and posterior predictive checks
-- `simulation_table_results.csv`: Numerical results table with summary statistics
-- `simulation_table_latex.tex`: LaTeX table for publication
+- **Main:** `simulation.pdf`, `fig_sim_curvelevel_coverage_pt_mut.pdf`, `curvelevel_coverage_summary.csv`, `lambda_summary_sim.csv` (.tex), `elbo_traces.pdf`, `mae_and_ppc.pdf`, `mae_and_ppc_death_counts.pdf`, `simulation_table_results.csv`, `simulation_table_latex.tex`
+- **Sensitivity:** `sensitivity_gamma.pdf`, `sensitivity_sigma.pdf`, `sensitivity_distributions.pdf`, `sensitivity_analysis_summary.csv`
+- **Lambda:** `fig_prior_predictive_smoothness.pdf`, `prior_pred_smoothness.csv`, `fig_lambda_scale_sensitivity.pdf`, `mae_by_lambda_scale.csv`
+- **MCMC vs ADVI:** `mcmc_vs_advi_comparison.pdf`, `mcmc_vs_advi_comparison.csv` (and curve-level coverage appended to `curvelevel_coverage_summary.csv`)
 
-### Sensitivity Analysis
-- `sensitivity_distributions.pdf`: Parameter sensitivity analysis results
-- `sensitivity_gamma.pdf`: Gamma parameter sensitivity plots
-- `sensitivity_sigma.pdf`: Sigma parameter sensitivity plots
+### Real-data applications (output_application/)
 
-### Real-world Applications
-- `covid_germany_cfr_curves.pdf`: COVID-19 CFR analysis for Germany
-- `covid_japan_cfr_curves.pdf`: COVID-19 CFR analysis for Japan
-- `covid_germany_derived_timeseries.csv`: Derived time series data for Germany
-- `covid_japan_derived_timeseries.csv`: Derived time series data for Japan
+- **Germany:** `covid_germany_lambda_summary.csv`, `covid_germany_cfr_curves_smooth.pdf`, `covid_germany_cfr_curves_raw.pdf`, `covid_germany_cases_deaths_daily.pdf`, `covid_germany_cases_deaths_ma7.pdf`, `covid_germany_derived_timeseries.csv`, `covid_germany_delay_pmf.csv`
+- **Japan:** `covid_japan_lambda_summary.csv`, `covid_japan_cfr_curves_smooth.pdf`, `covid_japan_cfr_curves_raw.pdf`, `covid_japan_cases_deaths_daily.pdf`, `covid_japan_cases_deaths_ma7.pdf`, `covid_japan_derived_timeseries.csv`, `covid_japan_delay_pmf.csv`
 
-## Method Description
+With `--save_lambda_summary`, Germany/Japan also write or append to `lambda_summary_real.csv` (and `.tex` in the same directory for GER; Japan uses `outputs/lambda_summary/` for the shared real summary).
 
-BrtaCFR employs a sophisticated Bayesian hierarchical framework for modeling time-varying case fatality rates:
+## Method Summary
 
-1. **Observation Model**: Deaths follow a Poisson distribution with rate parameter accounting for reporting delays
-2. **Process Model**: CFR evolves according to specified temporal patterns with appropriate prior distributions
-3. **Inference**: ADVI provides fast, approximate posterior sampling with convergence monitoring
-4. **Diagnostics**: Comprehensive ELBO monitoring and posterior predictive checks
-5. **Validation**: Extensive sensitivity analysis and real-world data validation demonstrate method robustness
+- **Observation model:** Deaths Poisson with rate that accounts for reporting delay.
+- **Process model:** Time-varying logit(CFR) with fused LASSO–type smoothness; lambda (smoothing) has a half-Cauchy prior.
+- **Inference:** ADVI (default); optional NUTS MCMC for comparison.
+- **Diagnostics:** ELBO convergence, MAE (logit scale), posterior predictive checks for μ_t and observed deaths, curve-level coverage.
 
-## Scenarios
+## Scenarios (simulations)
 
-The framework handles six comprehensive epidemic scenarios representing diverse outbreak patterns:
+- **A – Constant;** **B – Exponential growth;** **C – Delayed growth;** **D – Decay;** **E – Peak;** **F – Valley**
 
-- **Constant**: Stable CFR over time with minimal variation
-- **Exponential Growth**: Monotonic increasing CFR following exponential pattern
-- **Delayed Growth**: CFR increase after initial stabilization period
-- **Decay**: Monotonic decreasing CFR over time
-- **Peak**: CFR peaks at intermediate time point then decreases
-- **Valley**: CFR decreases initially then increases (U-shaped pattern)
+## Project Structure
+
+- `run_all_simulations.py` – Simulation pipeline, checkpointing, plotting
+- `methods.py` – `BrtaCFR_estimator`, `mCFR_EST`, `lambda_summary_stats`, custom prior logp
+- `run_application_covid_GER.py` – Germany application (JHU CSSE)
+- `run_application_covid_JP.py` – Japan application (WHO)
+- `requirements.txt` – Python dependencies
 
 ## Citation
 
@@ -212,11 +154,9 @@ If you use BrtaCFR in your research, please cite:
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+This project is licensed under the MIT License — see the [LICENSE](LICENSE) file for details.
 
 ## Contact
-
-For questions, support, or collaboration opportunities, please contact:
 
 **Dr. Hengtao Zhang**  
 Email: [zhanght@gdou.edu.cn](mailto:zhanght@gdou.edu.cn)  
