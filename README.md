@@ -94,13 +94,15 @@ print(results["lower"], results["upper"])
 
 Replication counts and paths are set in `DEFAULT_CONFIG` and `DEMO_CONFIG`:
 
-| Config key         | Full  | Demo |
-|--------------------|-------|------|
-| `main_reps`        | 1000  | 2    |
-| `sensitivity_reps`| 100   | 2    |
-| `mcmc_reps`        | 10    | 2    |
-| `output_dir`       | `./outputs` | `./outputs_demo` |
+
+| Config key         | Full            | Demo                 |
+| ------------------ | --------------- | -------------------- |
+| `main_reps`        | 1000            | 2                    |
+| `sensitivity_reps` | 100             | 2                    |
+| `mcmc_reps`        | 10              | 2                    |
+| `output_dir`       | `./outputs`     | `./outputs_demo`     |
 | `checkpoint_dir`   | `./checkpoints` | `./checkpoints_demo` |
+
 
 Lambda analysis (prior predictive smoothness) uses a fixed **500 draws** per (scenario, λ scale) (`N_PRIOR_DRAWS`), independent of demo/full.
 
@@ -146,8 +148,8 @@ If you use BrtaCFR in your research, please cite:
 ```bibtex
 @article{brtacfr2024,
   title={BrtaCFR: Bayesian Real-time Case Fatality Rate Estimation},
-  author={Your Name},
-  journal={Your Journal},
+  author={Name},
+  journal={Journal},
   year={2024}
 }
 ```
