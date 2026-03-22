@@ -141,19 +141,6 @@ With `--save_lambda_summary`, Germany/Japan also write or append to `lambda_summ
 - `run_application_covid_JP.py` – Japan application (WHO)
 - `requirements.txt` – Python dependencies
 
-## Citation
-
-If you use BrtaCFR in your research, please cite:
-
-```bibtex
-@article{brtacfr2024,
-  title={BrtaCFR: Bayesian Real-time Case Fatality Rate Estimation},
-  author={Name},
-  journal={Journal},
-  year={2024}
-}
-```
-
 ## License
 
 This project is licensed under the MIT License — see the [LICENSE](LICENSE) file for details.
